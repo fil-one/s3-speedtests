@@ -1,0 +1,371 @@
+#!/usr/bin/env python3
+"""Build a Google Docs-friendly DOCX summary from benchmark JSONL output."""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+from pathlib import Path
+from typing import Any
+
+PROVIDERS = {
+    "f1": ("Fil.one", "eu-west-1", "Albi, France"),
+    "fil.one": ("Fil.one", "eu-west-1", "Albi, France"),
+    "filone": ("Fil.one", "eu-west-1", "Albi, France"),
+    "aws": ("AWS", "eu-south-2", "Aragon, Spain"),
+    "aws-test": ("AWS", "eu-south-2", "Aragon, Spain"),
+    "wasabi": ("Wasabi", "eu-west-2", "Paris, France"),
+    "backblaze": ("Backblaze", "eu-central-003", "Amsterdam, Netherlands"),
+}
+
+
+def import_docx() -> None:
+    global Document
+    global Inches
+    global OxmlElement
+    global Pt
+    global RGBColor
+    global WD_ALIGN_PARAGRAPH
+    global WD_CELL_VERTICAL_ALIGNMENT
+    global WD_SECTION
+    global WD_TABLE_ALIGNMENT
+    global qn
+
+    try:
+        from docx import Document
+        from docx.enum.section import WD_SECTION
+        from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+        from docx.shared import Inches, Pt, RGBColor
+    except ModuleNotFoundError as exc:
+        raise SystemExit("python-docx is required. Run scripts/setup_vm.sh or install python3-docx.") from exc
+
+
+def provider_key(value: str) -> str:
+    return value.strip().lower()
+
+
+def load_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def latest(data_dir: Path, pattern: str, fallback: str) -> Path:
+    matches = sorted(data_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+    return matches[0] if matches else data_dir / fallback
+
+
+def fmt_size(mib: float) -> str:
+    if mib >= 1024:
+        gib = mib / 1024
+        return f"{int(round(gib))} GiB" if abs(gib - round(gib)) < 0.001 else f"{gib:.1f} GiB"
+    return f"{mib:g} MiB"
+
+
+def fmt_mbps(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:,.0f} Mbps" if value >= 100 else f"{value:,.2f} Mbps"
+
+
+def provider_label(provider: str) -> str:
+    name, region, location = PROVIDERS[provider_key(provider)]
+    return f"{name}\n({region} | {location})"
+
+
+def compact_provider(provider: str) -> str:
+    return PROVIDERS[provider_key(provider)][0]
+
+
+def transfer_rows(records: list[dict[str, Any]], record_type: str, file_set: str | None = None) -> list[dict[str, Any]]:
+    rows = []
+    for record in records:
+        if record.get("record_type") != record_type:
+            continue
+        if file_set and record.get("file_set") != file_set:
+            continue
+        provider = provider_key(str(record.get("provider", "")))
+        if provider not in PROVIDERS:
+            continue
+        rows.append({
+            "provider": provider,
+            "size_mib": float(record["file_size_mib"]),
+            "attempts": record.get("attempt_count"),
+            "successes": record.get("success_count"),
+            "median_mbps": record.get("median_throughput_mbps"),
+            "avg_mbps": record.get("avg_throughput_mbps"),
+        })
+    return rows
+
+
+def latest_run_records(records: list[dict[str, Any]], record_type: str, file_set: str | None = None) -> list[dict[str, Any]]:
+    candidates = [
+        record for record in records
+        if record.get("record_type") == record_type and (file_set is None or record.get("file_set") == file_set)
+    ]
+    run_ids = sorted({str(record.get("run_id", "")) for record in candidates if record.get("run_id")})
+    if not run_ids:
+        return candidates
+    latest_run_id = run_ids[-1]
+    return [record for record in candidates if str(record.get("run_id", "")) == latest_run_id]
+
+
+def ranked_by_size(rows: list[dict[str, Any]]) -> list[tuple[float, list[dict[str, Any]]]]:
+    grouped = []
+    for size in sorted({row["size_mib"] for row in rows}):
+        members = [row for row in rows if row["size_mib"] == size]
+        members.sort(key=lambda row: (-(row["median_mbps"] or 0), compact_provider(row["provider"])))
+        grouped.append((size, members))
+    return grouped
+
+
+def set_cell_text(cell, text: str, bold_first_line: bool = False, font_size: float = 9.0) -> None:
+    cell.text = ""
+    lines = text.split("\n")
+    p = cell.paragraphs[0]
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    for idx, line in enumerate(lines):
+        if idx:
+            p.add_run().add_break()
+        run = p.add_run(line)
+        run.font.name = "Arial"
+        run.font.size = Pt(font_size)
+        run.bold = bold_first_line and idx == 0
+
+
+def shade_cell(cell, fill: str) -> None:
+    tc_pr = cell._tc.get_or_add_tcPr()
+    shd = tc_pr.find(qn("w:shd"))
+    if shd is None:
+        shd = OxmlElement("w:shd")
+        tc_pr.append(shd)
+    shd.set(qn("w:fill"), fill)
+
+
+def set_cell_width(cell, width_in: float) -> None:
+    tc_pr = cell._tc.get_or_add_tcPr()
+    tc_w = tc_pr.find(qn("w:tcW"))
+    if tc_w is None:
+        tc_w = OxmlElement("w:tcW")
+        tc_pr.append(tc_w)
+    tc_w.set(qn("w:w"), str(int(width_in * 1440)))
+    tc_w.set(qn("w:type"), "dxa")
+
+
+def style_table(table, widths: list[float], header_fill: str = "F1F3F4") -> None:
+    table.style = "Table Grid"
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    table.autofit = False
+    tbl_pr = table._tbl.tblPr
+    tbl_w = tbl_pr.find(qn("w:tblW"))
+    if tbl_w is None:
+        tbl_w = OxmlElement("w:tblW")
+        tbl_pr.append(tbl_w)
+    tbl_w.set(qn("w:w"), str(int(sum(widths) * 1440)))
+    tbl_w.set(qn("w:type"), "dxa")
+    for row_idx, row in enumerate(table.rows):
+        for idx, cell in enumerate(row.cells):
+            if idx < len(widths):
+                set_cell_width(cell, widths[idx])
+            cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+            for p in cell.paragraphs:
+                p.paragraph_format.space_after = Pt(0)
+            if row_idx == 0:
+                shade_cell(cell, header_fill)
+                for p in cell.paragraphs:
+                    for run in p.runs:
+                        run.bold = True
+
+
+def add_heading(doc: Document, text: str, level: int = 1) -> None:
+    p = doc.add_paragraph()
+    p.style = f"Heading {level}"
+    run = p.add_run(text)
+    run.font.name = "Arial"
+    run.font.color.rgb = RGBColor(0, 0, 0)
+    run.bold = False
+
+
+def add_body(doc: Document, text: str) -> None:
+    p = doc.add_paragraph()
+    p.style = "Normal"
+    run = p.add_run(text)
+    run.font.name = "Arial"
+    run.font.size = Pt(11)
+
+
+def add_ranked_table(doc: Document, title: str, rows: list[tuple[float, list[dict[str, Any]]]]) -> None:
+    add_heading(doc, title, 2)
+    if not rows:
+        add_body(doc, "No matching summary records were found for this section.")
+        return
+    table = doc.add_table(rows=1, cols=5)
+    for idx, header in enumerate(["File size", "Fastest", "2nd", "3rd", "4th"]):
+        set_cell_text(table.rows[0].cells[idx], header, bold_first_line=True, font_size=8.5)
+    for size, members in rows:
+        cells = table.add_row().cells
+        set_cell_text(cells[0], fmt_size(size), bold_first_line=True, font_size=8.5)
+        for idx in range(4):
+            text = "n/a"
+            if idx < len(members):
+                m = members[idx]
+                text = f"{provider_label(m['provider'])}\nMedian {fmt_mbps(m['median_mbps'])}\nAvg {fmt_mbps(m['avg_mbps'])}"
+            set_cell_text(cells[idx + 1], text, bold_first_line=True, font_size=7.2)
+    style_table(table, [0.75, 1.43, 1.43, 1.43, 1.43])
+
+
+def add_network_table(doc: Document, records: list[dict[str, Any]]) -> None:
+    add_heading(doc, "Node Network Baseline", 2)
+    rows = [r for r in records if r.get("record_type") == "network_speedtest_summary"]
+    if not rows:
+        add_body(doc, "No Ookla network summary records were found.")
+        return
+    table = doc.add_table(rows=1, cols=5)
+    for idx, header in enumerate(["Target", "Median ping", "Median download", "Median upload", "Packet loss"]):
+        set_cell_text(table.rows[0].cells[idx], header, bold_first_line=True, font_size=8.5)
+    for r in sorted(rows, key=lambda x: -(x.get("median_download_mbps") or 0)):
+        cells = table.add_row().cells
+        set_cell_text(cells[0], f"{r.get('target_city') or r.get('target_label')}\n{r.get('target_country') or ''}", bold_first_line=True, font_size=8)
+        set_cell_text(cells[1], f"{r.get('median_ping_ms', 0):.2f} ms", font_size=8)
+        set_cell_text(cells[2], fmt_mbps(r.get("median_download_mbps")), font_size=8)
+        set_cell_text(cells[3], fmt_mbps(r.get("median_upload_mbps")), font_size=8)
+        set_cell_text(cells[4], f"{r.get('max_packet_loss_percent', 0)}%", font_size=8)
+    style_table(table, [1.25, 1.15, 1.35, 1.35, 1.0])
+
+
+def add_specs_table(doc: Document, args: argparse.Namespace) -> None:
+    table = doc.add_table(rows=5, cols=2)
+    specs = [
+        ("Test node", args.node_name),
+        ("Location", args.node_location),
+        ("Network", args.node_network),
+        ("Compute", args.node_compute),
+        ("Memory", args.node_memory),
+    ]
+    for row, (key, value) in zip(table.rows, specs):
+        set_cell_text(row.cells[0], key, bold_first_line=True, font_size=9)
+        set_cell_text(row.cells[1], value, font_size=9)
+        row.cells[0].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.LEFT
+        row.cells[1].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.LEFT
+    style_table(table, [1.55, 4.85], header_fill="FFFFFF")
+    for row in table.rows:
+        shade_cell(row.cells[0], "F1F3F4")
+
+
+def style_document(doc: Document) -> None:
+    section = doc.sections[0]
+    section.top_margin = Inches(1)
+    section.bottom_margin = Inches(1)
+    section.left_margin = Inches(1)
+    section.right_margin = Inches(1)
+    styles = doc.styles
+    styles["Normal"].font.name = "Arial"
+    styles["Normal"].font.size = Pt(11)
+    styles["Normal"].paragraph_format.line_spacing = 1.15
+    styles["Normal"].paragraph_format.space_after = Pt(8)
+    for style_name, size, before, after in [("Heading 1", 20, 20, 6), ("Heading 2", 16, 18, 6)]:
+        style = styles[style_name]
+        style.font.name = "Arial"
+        style.font.size = Pt(size)
+        style.font.bold = False
+        style.font.color.rgb = RGBColor(0, 0, 0)
+        style.paragraph_format.space_before = Pt(before)
+        style.paragraph_format.space_after = Pt(after)
+        style.paragraph_format.line_spacing = 1.15
+
+
+def create_doc(args: argparse.Namespace) -> Path:
+    import_docx()
+    data_dir = Path(args.data_dir)
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    network_records = load_jsonl(data_dir / "network_speedtest_ookla_summary.jsonl")
+    upload_records = load_jsonl(data_dir / "s3_upload_speedtest_summary.jsonl")
+    download_records = load_jsonl(data_dir / "s3_download_speedtest_summary.jsonl")
+
+    if not upload_records:
+        upload_records = load_jsonl(latest(data_dir, "s3_upload_speedtest_summary_*.jsonl", "s3_upload_speedtest_summary.jsonl"))
+    if not download_records:
+        download_records = load_jsonl(latest(data_dir, "s3_download_speedtest_summary_*.jsonl", "s3_download_speedtest_summary.jsonl"))
+
+    upload_standard_records = latest_run_records(upload_records, "s3_upload_summary", "standard")
+    upload_large_records = latest_run_records(upload_records, "s3_upload_summary", "large")
+    download_latest_records = latest_run_records(download_records, "s3_download_summary")
+
+    upload_standard = transfer_rows(upload_standard_records, "s3_upload_summary", "standard")
+    upload_large = transfer_rows(upload_large_records, "s3_upload_summary", "large")
+    if not upload_standard:
+        upload_standard = [r for r in transfer_rows(latest_run_records(upload_records, "s3_upload_summary"), "s3_upload_summary") if r["size_mib"] <= 1024]
+    if not upload_large:
+        upload_large = [r for r in transfer_rows(latest_run_records(upload_records, "s3_upload_summary"), "s3_upload_summary") if r["size_mib"] >= 1024]
+    download = transfer_rows(download_latest_records, "s3_download_summary")
+
+    stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+    docx = output_dir / f"s3_provider_speedtest_summary_{stamp}.docx"
+
+    doc = Document()
+    style_document(doc)
+    title = doc.add_paragraph()
+    title.paragraph_format.space_before = Pt(0)
+    title.paragraph_format.space_after = Pt(3)
+    title_run = title.add_run("S3 Provider Transfer Benchmark Summary")
+    title_run.font.name = "Arial"
+    title_run.font.size = Pt(26)
+    title_run.font.bold = False
+
+    add_body(doc, f"Prepared from JSONL benchmark output in {data_dir}. Rankings in the transfer tables are ordered fastest to slowest from left to right using median throughput.")
+    add_heading(doc, "Test Node", 2)
+    add_specs_table(doc, args)
+    add_heading(doc, "Provider Labels", 2)
+    add_body(doc, "Provider titles: Fil.one (eu-west-1 | Albi, France), AWS (eu-south-2 | Aragon, Spain), Wasabi (eu-west-2 | Paris, France), and Backblaze (eu-central-003 | Amsterdam, Netherlands).")
+    add_network_table(doc, network_records)
+    add_heading(doc, "File Size Tests", 2)
+    sizes = sorted({row["size_mib"] for row in upload_standard + upload_large + download})
+    add_body(doc, "The benchmark file sizes represented in the loaded results are: " + ", ".join(fmt_size(size) for size in sizes) + ".")
+
+    doc.add_section(WD_SECTION.NEW_PAGE)
+    add_ranked_table(doc, "Upload Results: Small / Standard File Set", ranked_by_size(upload_standard))
+    add_ranked_table(doc, "Upload Results: Large File Set", ranked_by_size(upload_large))
+
+    doc.add_section(WD_SECTION.NEW_PAGE)
+    add_ranked_table(doc, "Download Results: All File Sizes", ranked_by_size(download))
+
+    add_heading(doc, "Key Takeaways", 2)
+    takeaways = [
+        "Use the ranked tables to compare provider behavior at each object size; large-object results are most representative of sustained transfer performance.",
+        "The Ookla baseline helps separate provider and route behavior from raw VM network capacity.",
+        "All source data remains in JSONL so it can be re-used for later analysis or report generation.",
+    ]
+    for text in takeaways:
+        p = doc.add_paragraph(style="List Bullet")
+        p.paragraph_format.space_after = Pt(4)
+        run = p.add_run(text)
+        run.font.name = "Arial"
+        run.font.size = Pt(11)
+
+    doc.save(docx)
+    return docx
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Build a DOCX report from benchmark JSONL output.")
+    parser.add_argument("--data-dir", default="/dataoutput", help="Directory containing JSONL benchmark output")
+    parser.add_argument("--output-dir", default="/dataoutput/reports", help="Directory for generated DOCX reports")
+    parser.add_argument("--node-name", default="Cubepath VM")
+    parser.add_argument("--node-location", default="Barcelona")
+    parser.add_argument("--node-network", default="1 Gbit connection; 10 Gbit dedicated not available in Barcelona on pay-as-you-go")
+    parser.add_argument("--node-compute", default="16 vCPU, dedicated")
+    parser.add_argument("--node-memory", default="48 GB RAM")
+    args = parser.parse_args()
+    docx = create_doc(args)
+    print(docx)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

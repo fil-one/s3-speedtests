@@ -1,0 +1,19 @@
+# Generated benchmark payloads and output
+testfiles/
+downloads/
+dataoutput/
+*.bin
+*.log
+
+# Local credentials/config
+config/s3_targets.ini
+*.bak.*
+
+# Python/cache/editor noise
+__pycache__/
+*.py[cod]
+.DS_Store
+.env
+.venv/
+venv/
+
