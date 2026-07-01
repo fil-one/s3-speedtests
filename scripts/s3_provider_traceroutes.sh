@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-OUTPUT_DIR="/dataoutput"
+OUTPUT_DIR="${OUTPUT_DIR:-/dataoutput}"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 
 TXT_OUT="${OUTPUT_DIR}/s3_provider_traceroutes_${RUN_ID}.txt"

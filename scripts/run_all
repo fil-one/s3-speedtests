@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+OUTPUT_DIR="${OUTPUT_DIR:-/dataoutput}"
+TARGETS_FILE="${TARGETS_FILE:-/testfiles/s3_targets.ini}"
+TESTFILES_DIR="${TESTFILES_DIR:-/testfiles}"
+DOWNLOADS_DIR="${DOWNLOADS_DIR:-/downloads}"
+PAUSE_SECONDS="${PAUSE_SECONDS:-5}"
+NETWORK_RUNS="${NETWORK_RUNS:-1}"
+NETWORK_SLEEP_SECONDS="${NETWORK_SLEEP_SECONDS:-5}"
+UPLOAD_RUNS="${UPLOAD_RUNS:-1}"
+DOWNLOAD_RUNS="${DOWNLOAD_RUNS:-1}"
+PROVIDERS=""
+
+usage() {
+  cat <<'USAGE'
+Usage: scripts/run_all [--providers aws,wasabi,backblaze,f1]
+
+Runs the full benchmark workflow except setup:
+  1. Write AWS CLI profiles from the target config
+  2. S3 access check
+  3. Ookla network baseline
+  4. S3 provider traceroutes
+  5. Standard upload test
+  6. Large upload test
+  7. Full download test
+  8. DOCX report generation
+
+Environment overrides:
+  OUTPUT_DIR=/dataoutput
+  TARGETS_FILE=/testfiles/s3_targets.ini
+  TESTFILES_DIR=/testfiles
+  DOWNLOADS_DIR=/downloads
+  PAUSE_SECONDS=5
+  NETWORK_RUNS=1
+  NETWORK_SLEEP_SECONDS=5
+  UPLOAD_RUNS=1
+  DOWNLOAD_RUNS=1
+USAGE
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --providers)
+      PROVIDERS="${2:-}"
+      if [[ -z "$PROVIDERS" ]]; then
+        echo "ERROR: --providers requires a comma-separated value" >&2
+        exit 2
+      fi
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+mkdir -p "$OUTPUT_DIR"
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
+RUN_LOG="${OUTPUT_DIR}/run_all_${RUN_ID}.log"
+
+log() {
+  printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$RUN_LOG"
+}
+
+pause_between_steps() {
+  if [[ "$PAUSE_SECONDS" =~ ^[0-9]+$ && "$PAUSE_SECONDS" -gt 0 ]]; then
+    log "waiting ${PAUSE_SECONDS}s"
+    sleep "$PAUSE_SECONDS"
+  fi
+}
+
+run_step() {
+  local name="$1"
+  shift
+  log "START ${name}"
+  {
+    printf '\n## START %s %s\n' "$name" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '$'
+    printf ' %q' "$@"
+    printf '\n'
+  } >> "$RUN_LOG"
+  set +e
+  "$@" 2>&1 | tee -a "$RUN_LOG"
+  local status="${PIPESTATUS[0]}"
+  set -e
+  if [[ "$status" -ne 0 ]]; then
+    log "FAILED ${name} status=${status}"
+    exit "$status"
+  fi
+  log "DONE ${name}"
+  pause_between_steps
+}
+
+log "run_id=${RUN_ID}"
+log "output_dir=${OUTPUT_DIR}"
+log "targets_file=${TARGETS_FILE}"
+log "testfiles_dir=${TESTFILES_DIR}"
+log "downloads_dir=${DOWNLOADS_DIR}"
+log "providers=${PROVIDERS:-all enabled}"
+log "run_log=${RUN_LOG}"
+
+PROFILE_ARGS=(--targets "$TARGETS_FILE")
+ACCESS_ARGS=(--targets "$TARGETS_FILE" --output-dir "$OUTPUT_DIR")
+UPLOAD_COMMON=(--targets "$TARGETS_FILE" --output-dir "$OUTPUT_DIR" --testfiles-dir "$TESTFILES_DIR" --runs "$UPLOAD_RUNS")
+DOWNLOAD_COMMON=(--targets "$TARGETS_FILE" --output-dir "$OUTPUT_DIR" --downloads-dir "$DOWNLOADS_DIR" --runs "$DOWNLOAD_RUNS")
+if [[ -n "$PROVIDERS" ]]; then
+  PROFILE_ARGS+=("$PROVIDERS")
+  ACCESS_ARGS=("$PROVIDERS" "${ACCESS_ARGS[@]}")
+  UPLOAD_COMMON+=(--providers "$PROVIDERS")
+  DOWNLOAD_COMMON+=(--providers "$PROVIDERS")
+fi
+
+run_step "s3_write_profiles" "$SCRIPT_DIR/s3_write_profiles.py" "${PROFILE_ARGS[@]}"
+run_step "s3_access_check" "$SCRIPT_DIR/s3_access_check.py" "${ACCESS_ARGS[@]}"
+run_step "network_speedtest_ookla" env RUNS="$NETWORK_RUNS" SLEEP_BETWEEN_TESTS="$NETWORK_SLEEP_SECONDS" OUTPUT_DIR="$OUTPUT_DIR" "$SCRIPT_DIR/network_speedtest_ookla.sh"
+run_step "s3_provider_traceroutes" env OUTPUT_DIR="$OUTPUT_DIR" "$SCRIPT_DIR/s3_provider_traceroutes.sh"
+run_step "s3_upload_standard" "$SCRIPT_DIR/s3_upload_speedtest.sh" "${UPLOAD_COMMON[@]}" --file-set standard
+run_step "s3_upload_large" "$SCRIPT_DIR/s3_upload_speedtest.sh" "${UPLOAD_COMMON[@]}" --file-set large
+run_step "s3_download_full" "$SCRIPT_DIR/s3_download_speedtest.sh" "${DOWNLOAD_COMMON[@]}" --file-set full
+run_step "build_summary_report" "$SCRIPT_DIR/build_summary_report.py" --data-dir "$OUTPUT_DIR" --output-dir "${OUTPUT_DIR}/reports"
+
+log "All benchmark steps completed"

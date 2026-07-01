@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-OUTPUT_DIR="/dataoutput"
+OUTPUT_DIR="${OUTPUT_DIR:-/dataoutput}"
 RUNS="${RUNS:-3}"
 SPEEDTEST_TIMEOUT="${SPEEDTEST_TIMEOUT:-240}"
 

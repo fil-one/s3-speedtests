@@ -42,6 +42,32 @@ For AWS SSO or temporary AWS credentials, configure the profile directly with AW
 
 ## Common Runs
 
+### Run Everything
+
+Warning: `run_all` executes the full benchmark workflow after setup. It writes AWS CLI profiles from `/testfiles/s3_targets.ini`, checks access, uploads the standard and large file sets, downloads all uploaded objects, runs network tests and traceroutes, and then builds the DOCX report. This can move more than 75 GiB per enabled provider in each direction and may incur cloud egress, storage, API, or bandwidth costs.
+
+Run the complete workflow:
+
+```bash
+./scripts/run_all
+```
+
+Run only selected providers:
+
+```bash
+./scripts/run_all --providers aws,wasabi
+```
+
+By default, `run_all` uses minimal waits: `PAUSE_SECONDS=5`, `NETWORK_RUNS=1`, and `NETWORK_SLEEP_SECONDS=5`. Override them when you want more samples:
+
+```bash
+NETWORK_RUNS=3 NETWORK_SLEEP_SECONDS=30 PAUSE_SECONDS=10 ./scripts/run_all
+```
+
+The orchestration log is written to `/dataoutput/run_all_<timestamp>.log`.
+
+### Individual Commands
+
 Check bucket access:
 
 ```bash
