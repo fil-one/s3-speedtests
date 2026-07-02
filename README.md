@@ -28,6 +28,18 @@ To install dependencies without generating the full payload set:
 sudo ./scripts/setup_vm.sh --skip-files
 ```
 
+To create or repair only the `/testfiles` payload set after dependencies are already installed:
+
+```bash
+sudo ./scripts/setup_vm.sh --files-only
+```
+
+To regenerate files even when matching filenames already exist:
+
+```bash
+sudo ./scripts/setup_vm.sh --files-only --force-files
+```
+
 ## Provider Config
 
 Setup seeds `/testfiles/s3_targets.ini` from `config/s3_targets.example.ini` if it does not already exist.
