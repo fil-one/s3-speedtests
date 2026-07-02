@@ -106,15 +106,10 @@ generate_file() {
   echo "generating ${path} (${mib} MiB)"
   local tmp="${path}.partial"
   "${SUDO[@]}" rm -f "$tmp"
-  set +o pipefail
-  openssl enc -aes-256-ctr -pass "pass:filone-speedtest-${path}" -nosalt < /dev/zero \
-    | "${SUDO[@]}" dd of="$tmp" bs=1M count="$mib" iflag=fullblock status=progress
-  local dd_status="${PIPESTATUS[1]}"
-  set -o pipefail
-  if [[ "$dd_status" -ne 0 ]]; then
+  if ! "${SUDO[@]}" dd if=/dev/urandom of="$tmp" bs=1M count="$mib" iflag=fullblock status=progress; then
     echo "ERROR: failed generating ${path}" >&2
     "${SUDO[@]}" rm -f "$tmp"
-    exit "$dd_status"
+    exit 1
   fi
   "${SUDO[@]}" mv "$tmp" "$path"
   "${SUDO[@]}" chmod 644 "$path"
@@ -126,7 +121,7 @@ generate_test_files() {
     return
   fi
 
-  for required in df awk stat openssl dd seq; do
+  for required in df awk stat dd seq; do
     if ! command -v "$required" >/dev/null 2>&1; then
       echo "ERROR: required command not found for payload generation: $required" >&2
       exit 1
