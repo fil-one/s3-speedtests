@@ -66,6 +66,7 @@ if ! command -v apt-get >/dev/null 2>&1; then
 fi
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+SPEEDTEST_VERSION="${SPEEDTEST_VERSION:-1.2.0}"
 
 prepare_directories() {
   echo "Creating benchmark directories..."
@@ -155,6 +156,67 @@ write_setup_manifest() {
 EOF
 }
 
+remove_ookla_packagecloud_repo() {
+  local list_file
+  shopt -s nullglob
+  for list_file in /etc/apt/sources.list.d/*ookla* /etc/apt/sources.list.d/*speedtest*; do
+    if [[ -f "$list_file" ]] && grep -qi 'packagecloud.io/ookla/speedtest-cli' "$list_file"; then
+      echo "Removing unsupported/stale Ookla apt source: $list_file"
+      "${SUDO[@]}" rm -f "$list_file"
+    fi
+  done
+  shopt -u nullglob
+}
+
+install_speedtest_from_tarball() {
+  local arch
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64|amd64) arch="x86_64" ;;
+    aarch64|arm64) arch="aarch64" ;;
+    *)
+      echo "ERROR: unsupported Ookla speedtest tarball architecture: $arch" >&2
+      return 1
+      ;;
+  esac
+
+  local tmpdir
+  local url
+  tmpdir="$(mktemp -d)"
+  url="${SPEEDTEST_TARBALL_URL:-https://install.speedtest.net/app/cli/ookla-speedtest-${SPEEDTEST_VERSION}-linux-${arch}.tgz}"
+  echo "Installing Ookla speedtest CLI from tarball: $url"
+  curl -fsSL "$url" -o "${tmpdir}/speedtest.tgz"
+  tar -xzf "${tmpdir}/speedtest.tgz" -C "$tmpdir"
+  "${SUDO[@]}" install -m 0755 "${tmpdir}/speedtest" /usr/local/bin/speedtest
+  rm -rf "$tmpdir"
+}
+
+install_speedtest_cli() {
+  echo "Installing Ookla speedtest CLI..."
+  "${SUDO[@]}" apt-get remove -y speedtest-cli >/dev/null 2>&1 || true
+  hash -r
+
+  if command -v speedtest >/dev/null 2>&1 && speedtest --version 2>/dev/null | grep -qi 'ookla'; then
+    speedtest --version
+    return 0
+  fi
+
+  if curl -fsSL https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | "${SUDO[@]}" bash \
+    && "${SUDO[@]}" apt-get update \
+    && "${SUDO[@]}" apt-get install -y speedtest; then
+    hash -r
+    speedtest --version
+    return 0
+  fi
+
+  echo "WARNING: Ookla packagecloud install failed; falling back to standalone tarball." >&2
+  remove_ookla_packagecloud_repo
+  "${SUDO[@]}" apt-get update
+  install_speedtest_from_tarball
+  hash -r
+  speedtest --version
+}
+
 prepare_directories
 
 if [[ "$FILES_ONLY" -eq 1 ]]; then
@@ -168,6 +230,8 @@ if [[ "$FILES_ONLY" -eq 1 ]]; then
   echo "targets_file=$TARGETS_FILE"
   exit 0
 fi
+
+remove_ookla_packagecloud_repo
 
 echo "Installing base dependencies..."
 "${SUDO[@]}" apt-get update
@@ -189,12 +253,7 @@ echo "Installing base dependencies..."
   traceroute \
   unzip
 
-echo "Installing Ookla speedtest CLI..."
-"${SUDO[@]}" apt-get remove -y speedtest-cli >/dev/null 2>&1 || true
-hash -r
-curl -fsSL https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | "${SUDO[@]}" bash
-"${SUDO[@]}" apt-get install -y speedtest
-hash -r
+install_speedtest_cli
 
 install_aws_cli_v2() {
   local arch
