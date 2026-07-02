@@ -72,6 +72,15 @@ def fmt_mbps(value: float | None) -> str:
     return f"{value:,.0f} Mbps" if value >= 100 else f"{value:,.2f} Mbps"
 
 
+def fmt_ms(value: Any) -> str:
+    if value is None or value == "":
+        return "n/a"
+    try:
+        return f"{float(value):.2f} ms"
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def fmt_trace_ips(value: Any) -> str:
     if not value:
         return "n/a"
@@ -206,6 +215,25 @@ def add_body(doc: Document, text: str) -> None:
     run.font.size = Pt(11)
 
 
+def add_monospace_block(doc: Document, text: str) -> None:
+    table = doc.add_table(rows=1, cols=1)
+    cell = table.rows[0].cells[0]
+    cell.text = ""
+    shade_cell(cell, "F8F9FA")
+    p = cell.paragraphs[0]
+    p.paragraph_format.space_after = Pt(0)
+    for idx, line in enumerate(text.splitlines() or [""]):
+        if idx:
+            p.add_run().add_break()
+        run = p.add_run(line)
+        run.font.name = "Courier New"
+        run.font.size = Pt(7.0)
+    style_table(table, [6.5], header_fill="F8F9FA")
+    for paragraph in cell.paragraphs:
+        for run in paragraph.runs:
+            run.bold = False
+
+
 def add_ranked_table(doc: Document, title: str, rows: list[tuple[float, list[dict[str, Any]]]]) -> None:
     add_heading(doc, title, 2)
     if not rows:
@@ -253,25 +281,33 @@ def add_traceroute_table(doc: Document, records: list[dict[str, Any]]) -> None:
         return
 
     rows.sort(key=lambda r: (r.get("provider") or "", r.get("region_location") or ""))
-    table = doc.add_table(rows=1, cols=6)
-    headers = ["Provider", "Region / location", "Endpoint", "Status", "Hops", "Resolved IPv4"]
+    table = doc.add_table(rows=1, cols=7)
+    headers = ["Provider", "Region / location", "Endpoint", "Status", "Hops", "Total ms", "Resolved IPv4"]
     for idx, header in enumerate(headers):
-        set_cell_text(table.rows[0].cells[idx], header, bold_first_line=True, font_size=7.6)
+        set_cell_text(table.rows[0].cells[idx], header, bold_first_line=True, font_size=7.2)
 
     for r in rows:
         cells = table.add_row().cells
         set_cell_text(cells[0], str(r.get("provider") or "n/a"), bold_first_line=True, font_size=7.3)
-        set_cell_text(cells[1], str(r.get("region_location") or "n/a"), font_size=7.0)
-        set_cell_text(cells[2], str(r.get("endpoint") or "n/a"), font_size=6.4)
+        set_cell_text(cells[1], str(r.get("region_location") or "n/a"), font_size=6.8)
+        set_cell_text(cells[2], str(r.get("endpoint") or "n/a"), font_size=6.2)
         set_cell_text(cells[3], str(r.get("status") or "n/a"), font_size=7.0)
         set_cell_text(cells[4], str(r.get("hop_count") if r.get("hop_count") is not None else "n/a"), font_size=7.0)
-        set_cell_text(cells[5], fmt_trace_ips(r.get("resolved_ipv4_addresses")), font_size=6.4)
+        set_cell_text(cells[5], fmt_ms(r.get("total_ms") if r.get("total_ms") is not None else r.get("final_hop_avg_ms")), font_size=7.0)
+        set_cell_text(cells[6], fmt_trace_ips(r.get("resolved_ipv4_addresses")), font_size=6.2)
 
-    style_table(table, [0.95, 1.2, 1.65, 0.7, 0.5, 1.5])
+    style_table(table, [0.85, 1.05, 1.45, 0.55, 0.45, 0.75, 1.4])
 
     run_ids = sorted({str(r.get("run_id")) for r in rows if r.get("run_id")})
     if run_ids:
-        add_body(doc, f"Traceroute source: TCP port 443 traceroute JSONL, latest included run_id {run_ids[-1]}. Full hop details remain available in the text and JSONL traceroute outputs.")
+        add_body(doc, f"Traceroute source: TCP port 443 traceroute JSONL, latest included run_id {run_ids[-1]}. Total ms is the average RTT from the last responding hop in the traceroute output.")
+
+    for r in rows:
+        total_ms = fmt_ms(r.get("total_ms") if r.get("total_ms") is not None else r.get("final_hop_avg_ms"))
+        label = f"{r.get('provider') or 'Provider'} - {r.get('endpoint') or 'endpoint'} - total {total_ms}"
+        add_body(doc, label)
+        trace_output = str(r.get("trace_output") or r.get("last_hop") or "No raw traceroute output was captured in this JSONL record.")
+        add_monospace_block(doc, trace_output)
 
 
 def add_specs_table(doc: Document, args: argparse.Namespace) -> None:
