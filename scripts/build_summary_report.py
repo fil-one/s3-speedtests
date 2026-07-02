@@ -72,6 +72,14 @@ def fmt_mbps(value: float | None) -> str:
     return f"{value:,.0f} Mbps" if value >= 100 else f"{value:,.2f} Mbps"
 
 
+def fmt_trace_ips(value: Any) -> str:
+    if not value:
+        return "n/a"
+    if isinstance(value, list):
+        return "\n".join(str(item) for item in value[:3]) + ("\n..." if len(value) > 3 else "")
+    return str(value)
+
+
 def provider_label(provider: str) -> str:
     name, region, location = PROVIDERS[provider_key(provider)]
     return f"{name}\n({region} | {location})"
@@ -237,6 +245,35 @@ def add_network_table(doc: Document, records: list[dict[str, Any]]) -> None:
     style_table(table, [1.25, 1.15, 1.35, 1.35, 1.0])
 
 
+def add_traceroute_table(doc: Document, records: list[dict[str, Any]]) -> None:
+    add_heading(doc, "Provider Traceroutes", 2)
+    rows = [r for r in records if r.get("test_type") == "tcp_traceroute_443"]
+    if not rows:
+        add_body(doc, "No provider traceroute records were found.")
+        return
+
+    rows.sort(key=lambda r: (r.get("provider") or "", r.get("region_location") or ""))
+    table = doc.add_table(rows=1, cols=6)
+    headers = ["Provider", "Region / location", "Endpoint", "Status", "Hops", "Resolved IPv4"]
+    for idx, header in enumerate(headers):
+        set_cell_text(table.rows[0].cells[idx], header, bold_first_line=True, font_size=7.6)
+
+    for r in rows:
+        cells = table.add_row().cells
+        set_cell_text(cells[0], str(r.get("provider") or "n/a"), bold_first_line=True, font_size=7.3)
+        set_cell_text(cells[1], str(r.get("region_location") or "n/a"), font_size=7.0)
+        set_cell_text(cells[2], str(r.get("endpoint") or "n/a"), font_size=6.4)
+        set_cell_text(cells[3], str(r.get("status") or "n/a"), font_size=7.0)
+        set_cell_text(cells[4], str(r.get("hop_count") if r.get("hop_count") is not None else "n/a"), font_size=7.0)
+        set_cell_text(cells[5], fmt_trace_ips(r.get("resolved_ipv4_addresses")), font_size=6.4)
+
+    style_table(table, [0.95, 1.2, 1.65, 0.7, 0.5, 1.5])
+
+    run_ids = sorted({str(r.get("run_id")) for r in rows if r.get("run_id")})
+    if run_ids:
+        add_body(doc, f"Traceroute source: TCP port 443 traceroute JSONL, latest included run_id {run_ids[-1]}. Full hop details remain available in the text and JSONL traceroute outputs.")
+
+
 def add_specs_table(doc: Document, args: argparse.Namespace) -> None:
     table = doc.add_table(rows=5, cols=2)
     specs = [
@@ -287,11 +324,14 @@ def create_doc(args: argparse.Namespace) -> Path:
     network_records = load_jsonl(data_dir / "network_speedtest_ookla_summary.jsonl")
     upload_records = load_jsonl(data_dir / "s3_upload_speedtest_summary.jsonl")
     download_records = load_jsonl(data_dir / "s3_download_speedtest_summary.jsonl")
+    traceroute_records = load_jsonl(data_dir / "s3_provider_traceroutes.jsonl")
 
     if not upload_records:
         upload_records = load_jsonl(latest(data_dir, "s3_upload_speedtest_summary_*.jsonl", "s3_upload_speedtest_summary.jsonl"))
     if not download_records:
         download_records = load_jsonl(latest(data_dir, "s3_download_speedtest_summary_*.jsonl", "s3_download_speedtest_summary.jsonl"))
+    if not traceroute_records:
+        traceroute_records = load_jsonl(latest(data_dir, "s3_provider_traceroutes_*.jsonl", "s3_provider_traceroutes.jsonl"))
 
     upload_standard_records = latest_run_records(upload_records, "s3_upload_summary", "standard")
     upload_large_records = latest_run_records(upload_records, "s3_upload_summary", "large")
@@ -334,6 +374,7 @@ def create_doc(args: argparse.Namespace) -> Path:
 
     doc.add_section(WD_SECTION.NEW_PAGE)
     add_ranked_table(doc, "Download Results: All File Sizes", ranked_by_size(download))
+    add_traceroute_table(doc, traceroute_records)
 
     add_heading(doc, "Key Takeaways", 2)
     takeaways = [
