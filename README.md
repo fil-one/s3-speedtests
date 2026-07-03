@@ -98,7 +98,7 @@ Check bucket access:
 Network baseline:
 
 ```bash
-RUNS=3 ./scripts/network_speedtest_ookla.sh
+RUNS=1 ./scripts/network_speedtest_ookla.sh
 ```
 
 Provider traceroutes:
@@ -156,6 +156,8 @@ The report builder loads the latest available benchmark artifacts:
 - `/dataoutput/s3_upload_speedtest_summary.jsonl` or the latest `s3_upload_speedtest_summary_*.jsonl`
 - `/dataoutput/s3_download_speedtest_summary.jsonl` or the latest `s3_download_speedtest_summary_*.jsonl`
 - `/dataoutput/s3_provider_traceroutes.jsonl` or the latest `s3_provider_traceroutes_*.jsonl`
+
+Upload and download ranking cells include median throughput, average throughput, total elapsed time, and median elapsed time when available. The traceroute section includes the provider summary table plus the full CLI traceroute command output with hop lines.
 
 When run interactively, the report builder prompts for the source node provider/name and source node location. It auto-detects hostname, vCPU count, and RAM from the VM.
 

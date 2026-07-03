@@ -239,6 +239,7 @@ def summarize(records: list[dict[str, Any]], base: dict[str, Any], output_paths:
             "median_throughput_mbps": round(statistics.median(speeds), 2) if speeds else None,
             "min_throughput_mbps": round(min(speeds), 2) if speeds else None,
             "max_throughput_mbps": round(max(speeds), 2) if speeds else None,
+            "total_elapsed_seconds": round(sum(elapsed), 3) if elapsed else None,
             "avg_elapsed_seconds": round(sum(elapsed) / len(elapsed), 3) if elapsed else None,
             "median_elapsed_seconds": round(statistics.median(elapsed), 3) if elapsed else None,
             "throughput_unit": "Mbps",

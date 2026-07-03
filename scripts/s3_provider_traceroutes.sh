@@ -126,6 +126,9 @@ for item in "${PROVIDERS[@]}"; do
   trace_start="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   safe_provider="$(echo "$provider" | tr ' /.' '___')"
   trace_tmp="/tmp/traceroute_${safe_provider}_${RUN_ID}.txt"
+  trace_command="traceroute -T -p 443 -n -w 3 -q 3 -m 30 $endpoint"
+
+  echo "$ $trace_command" | tee -a "$TXT_OUT"
 
   if traceroute -T -p 443 -n -w 3 -q 3 -m 30 "$endpoint" > "$trace_tmp" 2>&1; then
     status="success"
@@ -165,6 +168,7 @@ for item in "${PROVIDERS[@]}"; do
     --arg provider "$provider" \
     --arg region_location "$region_location" \
     --arg endpoint "$endpoint" \
+    --arg trace_command "$trace_command" \
     --arg resolved_ips "$resolved_ips" \
     --arg status "$status" \
     --argjson hop_count "$hop_count" \
@@ -180,6 +184,7 @@ for item in "${PROVIDERS[@]}"; do
       provider: $provider,
       region_location: $region_location,
       endpoint: $endpoint,
+      trace_command: $trace_command,
       resolved_ipv4_addresses: ($resolved_ips | split(",") | map(select(length > 0))),
       status: $status,
       hop_count: $hop_count,

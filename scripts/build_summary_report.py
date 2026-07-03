@@ -160,6 +160,20 @@ def fmt_mbps(value: float | None) -> str:
     return f"{value:,.0f} Mbps" if value >= 100 else f"{value:,.2f} Mbps"
 
 
+def fmt_seconds(value: Any) -> str:
+    if value is None or value == "":
+        return "n/a"
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if seconds >= 3600:
+        return f"{seconds / 3600:.2f} h"
+    if seconds >= 60:
+        return f"{seconds / 60:.2f} min"
+    return f"{seconds:.3f} s"
+
+
 def fmt_ms(value: Any) -> str:
     if value is None or value == "":
         return "n/a"
@@ -186,6 +200,45 @@ def compact_provider(provider: str) -> str:
     return PROVIDERS[provider_key(provider)][0]
 
 
+def summary_total_elapsed(record: dict[str, Any]) -> float | None:
+    value = record.get("total_elapsed_seconds")
+    if value is not None:
+        return value
+    avg_elapsed = record.get("avg_elapsed_seconds")
+    successes = record.get("success_count")
+    if avg_elapsed is None or successes is None:
+        return None
+    try:
+        return float(avg_elapsed) * int(successes)
+    except (TypeError, ValueError):
+        return None
+
+
+def transfer_cell_text(row: dict[str, Any]) -> str:
+    lines = [
+        provider_label(row["provider"]),
+        f"Median {fmt_mbps(row['median_mbps'])}",
+        f"Avg {fmt_mbps(row['avg_mbps'])}",
+        f"Total time {fmt_seconds(row.get('total_elapsed_seconds'))}",
+    ]
+    if row.get("median_elapsed_seconds") is not None:
+        lines.append(f"Median time {fmt_seconds(row.get('median_elapsed_seconds'))}")
+    return "\n".join(lines)
+
+
+def traceroute_command(record: dict[str, Any]) -> str:
+    command = str(record.get("trace_command") or "").strip()
+    if command:
+        return command
+    endpoint = str(record.get("endpoint") or "endpoint")
+    return f"traceroute -T -p 443 -n -w 3 -q 3 -m 30 {endpoint}"
+
+
+def full_traceroute_block(record: dict[str, Any]) -> str:
+    trace_output = str(record.get("trace_output") or record.get("last_hop") or "No raw traceroute output was captured in this JSONL record.")
+    return f"$ {traceroute_command(record)}\n{trace_output}"
+
+
 def transfer_rows(records: list[dict[str, Any]], record_type: str, file_set: str | None = None) -> list[dict[str, Any]]:
     rows = []
     for record in records:
@@ -203,6 +256,9 @@ def transfer_rows(records: list[dict[str, Any]], record_type: str, file_set: str
             "successes": record.get("success_count"),
             "median_mbps": record.get("median_throughput_mbps"),
             "avg_mbps": record.get("avg_throughput_mbps"),
+            "total_elapsed_seconds": summary_total_elapsed(record),
+            "median_elapsed_seconds": record.get("median_elapsed_seconds"),
+            "avg_elapsed_seconds": record.get("avg_elapsed_seconds"),
         })
     return rows
 
@@ -337,7 +393,7 @@ def add_ranked_table(doc: Document, title: str, rows: list[tuple[float, list[dic
             text = "n/a"
             if idx < len(members):
                 m = members[idx]
-                text = f"{provider_label(m['provider'])}\nMedian {fmt_mbps(m['median_mbps'])}\nAvg {fmt_mbps(m['avg_mbps'])}"
+                text = transfer_cell_text(m)
             set_cell_text(cells[idx + 1], text, bold_first_line=True, font_size=7.2)
     style_table(table, [0.75, 1.43, 1.43, 1.43, 1.43])
 
@@ -394,8 +450,7 @@ def add_traceroute_table(doc: Document, records: list[dict[str, Any]]) -> None:
         total_ms = fmt_ms(r.get("total_ms") if r.get("total_ms") is not None else r.get("final_hop_avg_ms"))
         label = f"{r.get('provider') or 'Provider'} - {r.get('endpoint') or 'endpoint'} - total {total_ms}"
         add_body(doc, label)
-        trace_output = str(r.get("trace_output") or r.get("last_hop") or "No raw traceroute output was captured in this JSONL record.")
-        add_monospace_block(doc, trace_output)
+        add_monospace_block(doc, full_traceroute_block(r))
 
 
 def add_specs_table(doc: Document, args: argparse.Namespace) -> None:
@@ -599,7 +654,7 @@ def pdf_add_ranked_table(story: list[Any], title: str, rows: list[tuple[float, l
             text = "n/a"
             if idx < len(members):
                 member = members[idx]
-                text = f"{provider_label(member['provider'])}\nMedian {fmt_mbps(member['median_mbps'])}\nAvg {fmt_mbps(member['avg_mbps'])}"
+                text = transfer_cell_text(member)
             row.append(text)
         table_rows.append(row)
     story.append(pdf_table(table_rows, [0.9, 2.1, 2.1, 2.1, 2.1], styles))
@@ -624,10 +679,7 @@ def pdf_add_network_table(story: list[Any], records: list[dict[str, Any]], style
 
 
 def pdf_trace_output(text: str) -> str:
-    lines = []
-    for line in text.splitlines() or [""]:
-        lines.append(line[:170])
-    return "\n".join(lines)
+    return "\n".join(text.splitlines() or [""])
 
 
 def pdf_add_traceroutes(story: list[Any], records: list[dict[str, Any]], styles: dict[str, Any]) -> None:
@@ -658,8 +710,7 @@ def pdf_add_traceroutes(story: list[Any], records: list[dict[str, Any]], styles:
         total_ms = fmt_ms(row.get("total_ms") if row.get("total_ms") is not None else row.get("final_hop_avg_ms"))
         label = f"{row.get('provider') or 'Provider'} - {row.get('endpoint') or 'endpoint'} - total {total_ms}"
         story.append(Paragraph(html.escape(label), styles["body"]))
-        trace_output = str(row.get("trace_output") or row.get("last_hop") or "No raw traceroute output was captured in this JSONL record.")
-        story.append(Preformatted(pdf_trace_output(trace_output), styles["mono"]))
+        story.append(Preformatted(pdf_trace_output(full_traceroute_block(row)), styles["mono"]))
         story.append(Spacer(1, 0.06 * inch))
 
 
