@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Build a Google Docs-friendly DOCX summary from benchmark JSONL output."""
+"""Build a Google Docs-friendly DOCX or PDF summary from benchmark JSONL output."""
 
 from __future__ import annotations
 
 import argparse
 import datetime as dt
+import html
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 from typing import Any
 
 PROVIDERS = {
@@ -44,6 +48,31 @@ def import_docx() -> None:
         raise SystemExit("python-docx is required. Run scripts/setup_vm.sh or install python3-docx.") from exc
 
 
+def import_reportlab() -> None:
+    global colors
+    global getSampleStyleSheet
+    global inch
+    global landscape
+    global letter
+    global PageBreak
+    global Paragraph
+    global ParagraphStyle
+    global PdfTable
+    global Preformatted
+    global SimpleDocTemplate
+    global Spacer
+    global TableStyle
+
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import landscape, letter
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.units import inch
+        from reportlab.platypus import PageBreak, Paragraph, Preformatted, SimpleDocTemplate, Spacer, Table as PdfTable, TableStyle
+    except ModuleNotFoundError as exc:
+        raise SystemExit("python3-reportlab is required for PDF output. Run scripts/setup_vm.sh or install python3-reportlab.") from exc
+
+
 def provider_key(value: str) -> str:
     return value.strip().lower()
 
@@ -57,6 +86,65 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
 def latest(data_dir: Path, pattern: str, fallback: str) -> Path:
     matches = sorted(data_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
     return matches[0] if matches else data_dir / fallback
+
+
+def command_text(cmd: list[str]) -> str:
+    try:
+        return subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True).strip()
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return ""
+
+
+def detect_hostname() -> str:
+    return command_text(["hostname"]) or os.environ.get("HOSTNAME", "") or "unknown"
+
+
+def detect_vcpus() -> str:
+    value = command_text(["nproc"])
+    if not value:
+        value = command_text(["sh", "-c", "getconf _NPROCESSORS_ONLN"])
+    return f"{value} vCPU" if value else "unknown"
+
+
+def detect_ram() -> str:
+    value = command_text(["sh", "-c", "free -m | awk '/^Mem:/ {print $2}'"])
+    if not value:
+        value = command_text(["sh", "-c", "awk '/MemTotal:/ {printf \"%.0f\", $2 / 1024}' /proc/meminfo"])
+    if not value:
+        return "unknown"
+    try:
+        gib = float(value) / 1024
+    except ValueError:
+        return "unknown"
+    if gib >= 10:
+        return f"{gib:.0f} GB RAM"
+    return f"{gib:.1f} GB RAM"
+
+
+def prompt_value(label: str, default: str = "") -> str:
+    suffix = f" [{default}]" if default else ""
+    value = input(f"{label}{suffix}: ").strip()
+    return value or default
+
+
+def resolve_source_context(args: argparse.Namespace) -> argparse.Namespace:
+    args.node_hostname = args.node_hostname or detect_hostname()
+    args.node_compute = args.node_compute or detect_vcpus()
+    args.node_memory = args.node_memory or detect_ram()
+
+    provider_default = args.source_provider or os.environ.get("SOURCE_NODE_PROVIDER", "")
+    location_default = args.source_location or os.environ.get("SOURCE_NODE_LOCATION", "")
+
+    if not args.no_prompt and sys.stdin.isatty():
+        args.source_provider = prompt_value("Source node provider/name", provider_default)
+        args.source_location = prompt_value("Source node location", location_default)
+    else:
+        args.source_provider = provider_default
+        args.source_location = location_default
+
+    args.source_provider = args.source_provider or args.node_hostname or "unknown"
+    args.source_location = args.source_location or "unknown"
+    return args
 
 
 def fmt_size(mib: float) -> str:
@@ -311,10 +399,11 @@ def add_traceroute_table(doc: Document, records: list[dict[str, Any]]) -> None:
 
 
 def add_specs_table(doc: Document, args: argparse.Namespace) -> None:
-    table = doc.add_table(rows=5, cols=2)
+    table = doc.add_table(rows=6, cols=2)
     specs = [
-        ("Test node", args.node_name),
-        ("Location", args.node_location),
+        ("Source provider", args.source_provider),
+        ("Source location", args.source_location),
+        ("Hostname", args.node_hostname),
         ("Network", args.node_network),
         ("Compute", args.node_compute),
         ("Memory", args.node_memory),
@@ -327,6 +416,42 @@ def add_specs_table(doc: Document, args: argparse.Namespace) -> None:
     style_table(table, [1.55, 4.85], header_fill="FFFFFF")
     for row in table.rows:
         shade_cell(row.cells[0], "F1F3F4")
+
+
+def load_report_data(data_dir: Path) -> dict[str, Any]:
+    network_records = load_jsonl(data_dir / "network_speedtest_ookla_summary.jsonl")
+    upload_records = load_jsonl(data_dir / "s3_upload_speedtest_summary.jsonl")
+    download_records = load_jsonl(data_dir / "s3_download_speedtest_summary.jsonl")
+    traceroute_records = load_jsonl(data_dir / "s3_provider_traceroutes.jsonl")
+
+    if not upload_records:
+        upload_records = load_jsonl(latest(data_dir, "s3_upload_speedtest_summary_*.jsonl", "s3_upload_speedtest_summary.jsonl"))
+    if not download_records:
+        download_records = load_jsonl(latest(data_dir, "s3_download_speedtest_summary_*.jsonl", "s3_download_speedtest_summary.jsonl"))
+    if not traceroute_records:
+        traceroute_records = load_jsonl(latest(data_dir, "s3_provider_traceroutes_*.jsonl", "s3_provider_traceroutes.jsonl"))
+
+    upload_standard_records = latest_run_records(upload_records, "s3_upload_summary", "standard")
+    upload_large_records = latest_run_records(upload_records, "s3_upload_summary", "large")
+    download_latest_records = latest_run_records(download_records, "s3_download_summary")
+
+    upload_standard = transfer_rows(upload_standard_records, "s3_upload_summary", "standard")
+    upload_large = transfer_rows(upload_large_records, "s3_upload_summary", "large")
+    if not upload_standard:
+        upload_standard = [r for r in transfer_rows(latest_run_records(upload_records, "s3_upload_summary"), "s3_upload_summary") if r["size_mib"] <= 1024]
+    if not upload_large:
+        upload_large = [r for r in transfer_rows(latest_run_records(upload_records, "s3_upload_summary"), "s3_upload_summary") if r["size_mib"] >= 1024]
+    download = transfer_rows(download_latest_records, "s3_download_summary")
+    sizes = sorted({row["size_mib"] for row in upload_standard + upload_large + download})
+
+    return {
+        "network_records": network_records,
+        "upload_standard": upload_standard,
+        "upload_large": upload_large,
+        "download": download,
+        "traceroute_records": traceroute_records,
+        "sizes": sizes,
+    }
 
 
 def style_document(doc: Document) -> None:
@@ -356,30 +481,7 @@ def create_doc(args: argparse.Namespace) -> Path:
     data_dir = Path(args.data_dir)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    network_records = load_jsonl(data_dir / "network_speedtest_ookla_summary.jsonl")
-    upload_records = load_jsonl(data_dir / "s3_upload_speedtest_summary.jsonl")
-    download_records = load_jsonl(data_dir / "s3_download_speedtest_summary.jsonl")
-    traceroute_records = load_jsonl(data_dir / "s3_provider_traceroutes.jsonl")
-
-    if not upload_records:
-        upload_records = load_jsonl(latest(data_dir, "s3_upload_speedtest_summary_*.jsonl", "s3_upload_speedtest_summary.jsonl"))
-    if not download_records:
-        download_records = load_jsonl(latest(data_dir, "s3_download_speedtest_summary_*.jsonl", "s3_download_speedtest_summary.jsonl"))
-    if not traceroute_records:
-        traceroute_records = load_jsonl(latest(data_dir, "s3_provider_traceroutes_*.jsonl", "s3_provider_traceroutes.jsonl"))
-
-    upload_standard_records = latest_run_records(upload_records, "s3_upload_summary", "standard")
-    upload_large_records = latest_run_records(upload_records, "s3_upload_summary", "large")
-    download_latest_records = latest_run_records(download_records, "s3_download_summary")
-
-    upload_standard = transfer_rows(upload_standard_records, "s3_upload_summary", "standard")
-    upload_large = transfer_rows(upload_large_records, "s3_upload_summary", "large")
-    if not upload_standard:
-        upload_standard = [r for r in transfer_rows(latest_run_records(upload_records, "s3_upload_summary"), "s3_upload_summary") if r["size_mib"] <= 1024]
-    if not upload_large:
-        upload_large = [r for r in transfer_rows(latest_run_records(upload_records, "s3_upload_summary"), "s3_upload_summary") if r["size_mib"] >= 1024]
-    download = transfer_rows(download_latest_records, "s3_download_summary")
+    report_data = load_report_data(data_dir)
 
     stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     docx = output_dir / f"s3_provider_speedtest_summary_{stamp}.docx"
@@ -399,18 +501,17 @@ def create_doc(args: argparse.Namespace) -> Path:
     add_specs_table(doc, args)
     add_heading(doc, "Provider Labels", 2)
     add_body(doc, "Provider titles: Fil.one (eu-west-1 | Albi, France), AWS (eu-south-2 | Aragon, Spain), Wasabi (eu-west-2 | Paris, France), and Backblaze (eu-central-003 | Amsterdam, Netherlands).")
-    add_network_table(doc, network_records)
+    add_network_table(doc, report_data["network_records"])
     add_heading(doc, "File Size Tests", 2)
-    sizes = sorted({row["size_mib"] for row in upload_standard + upload_large + download})
-    add_body(doc, "The benchmark file sizes represented in the loaded results are: " + ", ".join(fmt_size(size) for size in sizes) + ".")
+    add_body(doc, "The benchmark file sizes represented in the loaded results are: " + ", ".join(fmt_size(size) for size in report_data["sizes"]) + ".")
 
     doc.add_section(WD_SECTION.NEW_PAGE)
-    add_ranked_table(doc, "Upload Results: Small / Standard File Set", ranked_by_size(upload_standard))
-    add_ranked_table(doc, "Upload Results: Large File Set", ranked_by_size(upload_large))
+    add_ranked_table(doc, "Upload Results: Small / Standard File Set", ranked_by_size(report_data["upload_standard"]))
+    add_ranked_table(doc, "Upload Results: Large File Set", ranked_by_size(report_data["upload_large"]))
 
     doc.add_section(WD_SECTION.NEW_PAGE)
-    add_ranked_table(doc, "Download Results: All File Sizes", ranked_by_size(download))
-    add_traceroute_table(doc, traceroute_records)
+    add_ranked_table(doc, "Download Results: All File Sizes", ranked_by_size(report_data["download"]))
+    add_traceroute_table(doc, report_data["traceroute_records"])
 
     add_heading(doc, "Key Takeaways", 2)
     takeaways = [
@@ -429,18 +530,211 @@ def create_doc(args: argparse.Namespace) -> Path:
     return docx
 
 
+def pdf_styles() -> dict[str, Any]:
+    base = getSampleStyleSheet()
+    return {
+        "title": ParagraphStyle("ReportTitle", parent=base["Title"], fontName="Helvetica", fontSize=20, leading=24, alignment=0, spaceAfter=8),
+        "heading": ParagraphStyle("ReportHeading", parent=base["Heading2"], fontName="Helvetica", fontSize=14, leading=17, spaceBefore=12, spaceAfter=6),
+        "body": ParagraphStyle("ReportBody", parent=base["BodyText"], fontName="Helvetica", fontSize=9, leading=12, spaceAfter=6),
+        "small": ParagraphStyle("ReportSmall", parent=base["BodyText"], fontName="Helvetica", fontSize=7.2, leading=8.5),
+        "tiny": ParagraphStyle("ReportTiny", parent=base["BodyText"], fontName="Helvetica", fontSize=6.2, leading=7.2),
+        "header": ParagraphStyle("ReportHeader", parent=base["BodyText"], fontName="Helvetica-Bold", fontSize=7.3, leading=8.5, alignment=1),
+        "mono": ParagraphStyle("ReportMono", parent=base["Code"], fontName="Courier", fontSize=5.8, leading=6.7),
+    }
+
+
+def pdf_paragraph(text: Any, style: Any) -> Any:
+    escaped = html.escape(str(text)).replace("\n", "<br/>")
+    return Paragraph(escaped, style)
+
+
+def pdf_table(rows: list[list[Any]], widths: list[float], styles: dict[str, Any], repeat_header: bool = True) -> Any:
+    converted = []
+    for row_idx, row in enumerate(rows):
+        row_style = styles["header"] if row_idx == 0 and repeat_header else styles["small"]
+        converted.append([pdf_paragraph(cell, row_style) for cell in row])
+    table = PdfTable(converted, colWidths=[width * inch for width in widths], repeatRows=1 if repeat_header else 0)
+    table.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#DADCE0")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F1F3F4")) if repeat_header else ("BACKGROUND", (0, 0), (-1, -1), colors.white),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]))
+    return table
+
+
+def pdf_add_heading(story: list[Any], text: str, styles: dict[str, Any]) -> None:
+    story.append(Paragraph(html.escape(text), styles["heading"]))
+
+
+def pdf_add_body(story: list[Any], text: str, styles: dict[str, Any]) -> None:
+    story.append(Paragraph(html.escape(text), styles["body"]))
+
+
+def pdf_add_specs_table(story: list[Any], args: argparse.Namespace, styles: dict[str, Any]) -> None:
+    rows = [
+        ["Source provider", args.source_provider],
+        ["Source location", args.source_location],
+        ["Hostname", args.node_hostname],
+        ["Network", args.node_network],
+        ["Compute", args.node_compute],
+        ["Memory", args.node_memory],
+    ]
+    story.append(pdf_table(rows, [1.7, 7.7], styles, repeat_header=False))
+    story.append(Spacer(1, 0.08 * inch))
+
+
+def pdf_add_ranked_table(story: list[Any], title: str, rows: list[tuple[float, list[dict[str, Any]]]], styles: dict[str, Any]) -> None:
+    pdf_add_heading(story, title, styles)
+    if not rows:
+        pdf_add_body(story, "No matching summary records were found for this section.", styles)
+        return
+    table_rows = [["File size", "Fastest", "2nd", "3rd", "4th"]]
+    for size, members in rows:
+        row = [fmt_size(size)]
+        for idx in range(4):
+            text = "n/a"
+            if idx < len(members):
+                member = members[idx]
+                text = f"{provider_label(member['provider'])}\nMedian {fmt_mbps(member['median_mbps'])}\nAvg {fmt_mbps(member['avg_mbps'])}"
+            row.append(text)
+        table_rows.append(row)
+    story.append(pdf_table(table_rows, [0.9, 2.1, 2.1, 2.1, 2.1], styles))
+
+
+def pdf_add_network_table(story: list[Any], records: list[dict[str, Any]], styles: dict[str, Any]) -> None:
+    pdf_add_heading(story, "Node Network Baseline", styles)
+    rows = [r for r in records if r.get("record_type") == "network_speedtest_summary"]
+    if not rows:
+        pdf_add_body(story, "No Ookla network summary records were found.", styles)
+        return
+    table_rows = [["Target", "Median ping", "Median download", "Median upload", "Packet loss"]]
+    for row in sorted(rows, key=lambda x: -(x.get("median_download_mbps") or 0)):
+        table_rows.append([
+            f"{row.get('target_city') or row.get('target_label')}\n{row.get('target_country') or ''}",
+            f"{row.get('median_ping_ms', 0):.2f} ms",
+            fmt_mbps(row.get("median_download_mbps")),
+            fmt_mbps(row.get("median_upload_mbps")),
+            f"{row.get('max_packet_loss_percent', 0)}%",
+        ])
+    story.append(pdf_table(table_rows, [2.0, 1.3, 1.7, 1.7, 1.1], styles))
+
+
+def pdf_trace_output(text: str) -> str:
+    lines = []
+    for line in text.splitlines() or [""]:
+        lines.append(line[:170])
+    return "\n".join(lines)
+
+
+def pdf_add_traceroutes(story: list[Any], records: list[dict[str, Any]], styles: dict[str, Any]) -> None:
+    pdf_add_heading(story, "Provider Traceroutes", styles)
+    rows = [r for r in records if r.get("test_type") == "tcp_traceroute_443"]
+    if not rows:
+        pdf_add_body(story, "No provider traceroute records were found.", styles)
+        return
+    rows.sort(key=lambda r: (r.get("provider") or "", r.get("region_location") or ""))
+    table_rows = [["Provider", "Region / location", "Endpoint", "Status", "Hops", "Total ms", "Resolved IPv4"]]
+    for row in rows:
+        table_rows.append([
+            row.get("provider") or "n/a",
+            row.get("region_location") or "n/a",
+            row.get("endpoint") or "n/a",
+            row.get("status") or "n/a",
+            row.get("hop_count") if row.get("hop_count") is not None else "n/a",
+            fmt_ms(row.get("total_ms") if row.get("total_ms") is not None else row.get("final_hop_avg_ms")),
+            fmt_trace_ips(row.get("resolved_ipv4_addresses")),
+        ])
+    story.append(pdf_table(table_rows, [0.9, 1.2, 2.2, 0.75, 0.55, 0.8, 1.6], styles))
+
+    run_ids = sorted({str(r.get("run_id")) for r in rows if r.get("run_id")})
+    if run_ids:
+        pdf_add_body(story, f"Traceroute source: TCP port 443 traceroute JSONL, latest included run_id {run_ids[-1]}. Total ms is the average RTT from the last responding hop in the traceroute output.", styles)
+
+    for row in rows:
+        total_ms = fmt_ms(row.get("total_ms") if row.get("total_ms") is not None else row.get("final_hop_avg_ms"))
+        label = f"{row.get('provider') or 'Provider'} - {row.get('endpoint') or 'endpoint'} - total {total_ms}"
+        story.append(Paragraph(html.escape(label), styles["body"]))
+        trace_output = str(row.get("trace_output") or row.get("last_hop") or "No raw traceroute output was captured in this JSONL record.")
+        story.append(Preformatted(pdf_trace_output(trace_output), styles["mono"]))
+        story.append(Spacer(1, 0.06 * inch))
+
+
+def create_pdf(args: argparse.Namespace) -> Path:
+    import_reportlab()
+    data_dir = Path(args.data_dir)
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    report_data = load_report_data(data_dir)
+
+    stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+    pdf = output_dir / f"s3_provider_speedtest_summary_{stamp}.pdf"
+    doc = SimpleDocTemplate(
+        str(pdf),
+        pagesize=landscape(letter),
+        leftMargin=0.45 * inch,
+        rightMargin=0.45 * inch,
+        topMargin=0.45 * inch,
+        bottomMargin=0.45 * inch,
+    )
+    styles = pdf_styles()
+    story: list[Any] = []
+
+    story.append(Paragraph("S3 Provider Transfer Benchmark Summary", styles["title"]))
+    pdf_add_body(story, f"Prepared from JSONL benchmark output in {data_dir}. Rankings in the transfer tables are ordered fastest to slowest from left to right using median throughput.", styles)
+    pdf_add_heading(story, "Test Node", styles)
+    pdf_add_specs_table(story, args, styles)
+    pdf_add_heading(story, "Provider Labels", styles)
+    pdf_add_body(story, "Provider titles: Fil.one (eu-west-1 | Albi, France), AWS (eu-south-2 | Aragon, Spain), Wasabi (eu-west-2 | Paris, France), and Backblaze (eu-central-003 | Amsterdam, Netherlands).", styles)
+    pdf_add_network_table(story, report_data["network_records"], styles)
+    pdf_add_heading(story, "File Size Tests", styles)
+    sizes = ", ".join(fmt_size(size) for size in report_data["sizes"]) or "none"
+    pdf_add_body(story, "The benchmark file sizes represented in the loaded results are: " + sizes + ".", styles)
+
+    story.append(PageBreak())
+    pdf_add_ranked_table(story, "Upload Results: Small / Standard File Set", ranked_by_size(report_data["upload_standard"]), styles)
+    pdf_add_ranked_table(story, "Upload Results: Large File Set", ranked_by_size(report_data["upload_large"]), styles)
+
+    story.append(PageBreak())
+    pdf_add_ranked_table(story, "Download Results: All File Sizes", ranked_by_size(report_data["download"]), styles)
+    pdf_add_traceroutes(story, report_data["traceroute_records"], styles)
+
+    pdf_add_heading(story, "Key Takeaways", styles)
+    for text in [
+        "Use the ranked tables to compare provider behavior at each object size; large-object results are most representative of sustained transfer performance.",
+        "The Ookla baseline helps separate provider and route behavior from raw VM network capacity.",
+        "All source data remains in JSONL so it can be re-used for later analysis or report generation.",
+    ]:
+        story.append(Paragraph("&bull; " + html.escape(text), styles["body"]))
+
+    doc.build(story)
+    return pdf
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build a DOCX report from benchmark JSONL output.")
+    parser = argparse.ArgumentParser(description="Build a DOCX or PDF report from benchmark JSONL output.")
     parser.add_argument("--data-dir", default="/dataoutput", help="Directory containing JSONL benchmark output")
-    parser.add_argument("--output-dir", default="/dataoutput/reports", help="Directory for generated DOCX reports")
-    parser.add_argument("--node-name", default="Cubepath VM")
-    parser.add_argument("--node-location", default="Barcelona")
-    parser.add_argument("--node-network", default="1 Gbit connection; 10 Gbit dedicated not available in Barcelona on pay-as-you-go")
-    parser.add_argument("--node-compute", default="16 vCPU, dedicated")
-    parser.add_argument("--node-memory", default="48 GB RAM")
+    parser.add_argument("--output-dir", default="/dataoutput/reports", help="Directory for generated reports")
+    parser.add_argument("--format", choices=["docx", "pdf", "both"], default="docx", help="Report output format")
+    parser.add_argument("--source-provider", "--node-name", dest="source_provider", default="", help="Source node provider/name; prompted when omitted in an interactive terminal")
+    parser.add_argument("--source-location", "--node-location", dest="source_location", default="", help="Source node location; prompted when omitted in an interactive terminal")
+    parser.add_argument("--node-hostname", default="", help="Source node hostname; auto-detected with hostname when omitted")
+    parser.add_argument("--node-network", default=os.environ.get("SOURCE_NODE_NETWORK", "unknown"), help="Source node network description")
+    parser.add_argument("--node-compute", default="", help="Source node compute description; auto-detected with nproc when omitted")
+    parser.add_argument("--node-memory", default="", help="Source node memory description; auto-detected with free/procfs when omitted")
+    parser.add_argument("--no-prompt", action="store_true", help="Do not prompt for source provider/location; use flags, env vars, or fallback values")
     args = parser.parse_args()
-    docx = create_doc(args)
-    print(docx)
+    args = resolve_source_context(args)
+    outputs = []
+    if args.format in {"docx", "both"}:
+        outputs.append(create_doc(args))
+    if args.format in {"pdf", "both"}:
+        outputs.append(create_pdf(args))
+    for output in outputs:
+        print(output)
     return 0
 
 

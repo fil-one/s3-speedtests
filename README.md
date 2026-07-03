@@ -14,7 +14,7 @@ cd filone-speedtests
 sudo ./scripts/setup_vm.sh
 ```
 
-The setup installs `traceroute`, `ping`, `jq`, `curl`, Python, `python3-docx`, Ookla `speedtest`, and AWS CLI. It also generates:
+The setup installs `traceroute`, `ping`, `jq`, `curl`, Python, `python3-docx`, `python3-reportlab`, Ookla `speedtest`, and AWS CLI. It also generates:
 
 - `100 x 1 MiB` files
 - `5 x 100 MiB` files
@@ -56,7 +56,7 @@ For AWS SSO or temporary AWS credentials, configure the profile directly with AW
 
 ### Run Everything
 
-Warning: `run_all` executes the full benchmark workflow after setup. It writes AWS CLI profiles from `/testfiles/s3_targets.ini`, checks access, uploads the standard and large file sets, downloads all uploaded objects, runs network tests and traceroutes, and then builds the DOCX report. This can move more than 75 GiB per enabled provider in each direction and may incur cloud egress, storage, API, or bandwidth costs.
+Warning: `run_all` executes the full benchmark workflow after setup. It writes AWS CLI profiles from `/testfiles/s3_targets.ini`, checks access, uploads the standard and large file sets, downloads all uploaded objects, runs network tests and traceroutes, and then builds the default DOCX report. This can move more than 75 GiB per enabled provider in each direction and may incur cloud egress, storage, API, or bandwidth costs.
 
 Run the complete workflow:
 
@@ -78,6 +78,15 @@ NETWORK_RUNS=3 NETWORK_SLEEP_SECONDS=30 PAUSE_SECONDS=10 ./scripts/run_all
 
 The orchestration log is written to `/dataoutput/run_all_<timestamp>.log`.
 
+The final report step prompts for the source node provider/name and location unless those values are supplied through environment variables:
+
+```bash
+SOURCE_NODE_PROVIDER="AWS EC2" \
+SOURCE_NODE_LOCATION="eu-west-3 | Paris, France" \
+SOURCE_NODE_NETWORK="1 Gbit connection" \
+./scripts/run_all --providers aws,wasabi
+```
+
 ### Individual Commands
 
 Check bucket access:
@@ -98,7 +107,13 @@ Provider traceroutes:
 ./scripts/s3_provider_traceroutes.sh
 ```
 
-Upload tests:
+Upload standard and large file sets together:
+
+```bash
+./scripts/s3_upload_speedtest.sh --file-set full
+```
+
+Run upload file sets separately when you want independent standard and large result files:
 
 ```bash
 ./scripts/s3_upload_speedtest.sh --file-set standard
@@ -117,10 +132,71 @@ Watch newest logs:
 tail -f "$(ls -t /dataoutput/*.log | head -n 1)"
 ```
 
-Build the DOCX summary report from `/dataoutput`:
+## Report Builder
+
+Build a summary report from JSONL output in `/dataoutput`:
 
 ```bash
 ./scripts/build_summary_report.py
 ```
 
-The generated report is written under `/dataoutput/reports`.
+DOCX is the default format. Generated reports are written under `/dataoutput/reports`.
+
+Choose a report format explicitly:
+
+```bash
+./scripts/build_summary_report.py --format docx
+./scripts/build_summary_report.py --format pdf
+./scripts/build_summary_report.py --format both
+```
+
+The report builder loads the latest available benchmark artifacts:
+
+- `/dataoutput/network_speedtest_ookla_summary.jsonl`
+- `/dataoutput/s3_upload_speedtest_summary.jsonl` or the latest `s3_upload_speedtest_summary_*.jsonl`
+- `/dataoutput/s3_download_speedtest_summary.jsonl` or the latest `s3_download_speedtest_summary_*.jsonl`
+- `/dataoutput/s3_provider_traceroutes.jsonl` or the latest `s3_provider_traceroutes_*.jsonl`
+
+When run interactively, the report builder prompts for the source node provider/name and source node location. It auto-detects hostname, vCPU count, and RAM from the VM.
+
+Prompted run:
+
+```bash
+./scripts/build_summary_report.py
+```
+
+Expected prompts:
+
+```text
+Source node provider/name:
+Source node location:
+```
+
+For non-interactive runs:
+
+```bash
+./scripts/build_summary_report.py \
+  --format docx \
+  --source-provider "AWS EC2" \
+  --source-location "eu-west-3 | Paris, France" \
+  --node-network "1 Gbit connection" \
+  --no-prompt
+```
+
+You can also use environment variables:
+
+```bash
+SOURCE_NODE_PROVIDER="AWS EC2" \
+SOURCE_NODE_LOCATION="eu-west-3 | Paris, France" \
+SOURCE_NODE_NETWORK="1 Gbit connection" \
+./scripts/build_summary_report.py --format pdf --no-prompt
+```
+
+Use explicit input and output directories when rebuilding a report from archived results:
+
+```bash
+./scripts/build_summary_report.py \
+  --format both \
+  --data-dir /dataoutput \
+  --output-dir /dataoutput/reports
+```

@@ -244,6 +244,7 @@ echo "Installing base dependencies..."
   python3 \
   python3-docx \
   python3-pip \
+  python3-reportlab \
   python3-venv \
   traceroute \
   unzip
