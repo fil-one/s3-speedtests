@@ -11,11 +11,12 @@ NETWORK_RUNS="${NETWORK_RUNS:-1}"
 NETWORK_SLEEP_SECONDS="${NETWORK_SLEEP_SECONDS:-5}"
 UPLOAD_RUNS="${UPLOAD_RUNS:-1}"
 DOWNLOAD_RUNS="${DOWNLOAD_RUNS:-1}"
+TRANSFER_PROGRESS="${TRANSFER_PROGRESS:-0}"
 PROVIDERS=""
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/run_all [--providers aws,wasabi,backblaze,f1]
+Usage: scripts/run_all [--providers aws,wasabi,backblaze,f1] [--progress]
 
 Runs the full benchmark workflow except setup:
   1. Write AWS CLI profiles from the target config
@@ -37,6 +38,7 @@ Environment overrides:
   NETWORK_SLEEP_SECONDS=5
   UPLOAD_RUNS=1
   DOWNLOAD_RUNS=1
+  TRANSFER_PROGRESS=0
 USAGE
 }
 
@@ -49,6 +51,10 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       shift 2
+      ;;
+    --progress)
+      TRANSFER_PROGRESS=1
+      shift
       ;;
     -h|--help)
       usage
@@ -105,12 +111,17 @@ log "targets_file=${TARGETS_FILE}"
 log "testfiles_dir=${TESTFILES_DIR}"
 log "downloads_dir=${DOWNLOADS_DIR}"
 log "providers=${PROVIDERS:-all enabled}"
+log "transfer_progress=${TRANSFER_PROGRESS}"
 log "run_log=${RUN_LOG}"
 
 PROFILE_ARGS=(--targets "$TARGETS_FILE")
 ACCESS_ARGS=(--targets "$TARGETS_FILE" --output-dir "$OUTPUT_DIR")
 UPLOAD_COMMON=(--targets "$TARGETS_FILE" --output-dir "$OUTPUT_DIR" --testfiles-dir "$TESTFILES_DIR" --runs "$UPLOAD_RUNS")
 DOWNLOAD_COMMON=(--targets "$TARGETS_FILE" --output-dir "$OUTPUT_DIR" --downloads-dir "$DOWNLOADS_DIR" --runs "$DOWNLOAD_RUNS")
+if [[ "$TRANSFER_PROGRESS" =~ ^(1|yes|true|on)$ ]]; then
+  UPLOAD_COMMON+=(--progress)
+  DOWNLOAD_COMMON+=(--progress)
+fi
 if [[ -n "$PROVIDERS" ]]; then
   PROFILE_ARGS+=("$PROVIDERS")
   ACCESS_ARGS=("$PROVIDERS" "${ACCESS_ARGS[@]}")

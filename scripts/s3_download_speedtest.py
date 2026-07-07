@@ -55,6 +55,19 @@ def tail_text(text: str, limit: int = 2000) -> str:
     return text if len(text) <= limit else text[-limit:]
 
 
+def fmt_mbps(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:.2f}"
+
+
+def run_transfer_command(cmd: list[str], env: dict[str, str], stream_progress: bool) -> subprocess.CompletedProcess[str]:
+    if stream_progress:
+        proc = subprocess.run(cmd, env=env)
+        return subprocess.CompletedProcess(cmd, proc.returncode, "", "")
+    return subprocess.run(cmd, text=True, capture_output=True, env=env)
+
+
 def write_jsonl(path: Path, record: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
@@ -203,13 +216,13 @@ def download_one(aws_path: str, target: dict[str, str], key: str, dest: Path, en
     cmd = aws_base(aws_path, target) + ["s3", "cp", f"s3://{target['bucket']}/{key}", str(dest)]
     if args.no_progress:
         cmd.append("--no-progress")
-    if args.only_show_errors:
+    if args.only_show_errors and args.no_progress:
         cmd.append("--only-show-errors")
     extra_args = target.get("extra_args", "")
     if extra_args:
         cmd.extend(shlex.split(extra_args))
     t0 = time.monotonic()
-    proc = subprocess.run(cmd, text=True, capture_output=True, env=env)
+    proc = run_transfer_command(cmd, env, stream_progress=not args.no_progress)
     elapsed = time.monotonic() - t0
     return proc, elapsed
 
@@ -408,7 +421,7 @@ def main() -> int:
                     cmd_display = aws_base(aws_path, target) + ["s3", "cp", f"s3://{target['bucket']}/{key}", str(dest)]
                     if args.no_progress:
                         cmd_display.append("--no-progress")
-                    if args.only_show_errors:
+                    if args.only_show_errors and args.no_progress:
                         cmd_display.append("--only-show-errors")
                     started = utc_now()
                     print(f"DOWNLOAD provider={provider} file={Path(key).name} size_mib={object_size_mib(size_bytes)}")
@@ -425,6 +438,11 @@ def main() -> int:
                         log.write(proc.stderr)
                     log.write(f"## download ended={ended} return_code={proc.returncode} elapsed_seconds={elapsed:.3f} actual_size={actual_size}\n")
                     log.flush()
+                    print(
+                        f"DONE download provider={provider} file={Path(key).name} "
+                        f"success={success} elapsed={elapsed:.3f}s "
+                        f"throughput_mbps={fmt_mbps(throughput)}"
+                    )
                     record = dict(base)
                     record.update({
                         "record_type": "s3_download_run",

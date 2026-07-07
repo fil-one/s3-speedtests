@@ -70,6 +70,18 @@ Run only selected providers:
 ./scripts/run_all --providers aws,wasabi
 ```
 
+Show AWS CLI transfer progress in the tmux console during upload and download steps:
+
+```bash
+./scripts/run_all --progress
+```
+
+The same behavior can be enabled with `TRANSFER_PROGRESS=1`:
+
+```bash
+TRANSFER_PROGRESS=1 ./scripts/run_all --providers aws,wasabi
+```
+
 By default, `run_all` uses minimal waits: `PAUSE_SECONDS=5`, `NETWORK_RUNS=1`, and `NETWORK_SLEEP_SECONDS=5`. Override them when you want more samples:
 
 ```bash
@@ -113,6 +125,12 @@ Upload standard and large file sets together:
 ./scripts/s3_upload_speedtest.sh --file-set full
 ```
 
+Show upload progress and per-object elapsed time / throughput in the console:
+
+```bash
+./scripts/s3_upload_speedtest.sh --file-set full --progress
+```
+
 Run upload file sets separately when you want independent standard and large result files:
 
 ```bash
@@ -125,6 +143,14 @@ Download all uploaded files:
 ```bash
 ./scripts/s3_download_speedtest.sh --file-set full
 ```
+
+Show download progress and per-object elapsed time / throughput in the console:
+
+```bash
+./scripts/s3_download_speedtest.sh --file-set full --progress
+```
+
+With `--progress`, the AWS CLI progress display streams to the terminal. The scripts still write JSONL metrics and print a final `DONE ... elapsed=... throughput_mbps=...` line for each object. When progress is enabled through `run_all`, the orchestration log also captures the console stream because `run_all` uses `tee`.
 
 Watch newest logs:
 

@@ -58,6 +58,19 @@ def tail_text(text: str, limit: int = 2000) -> str:
     return text[-limit:]
 
 
+def fmt_mbps(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:.2f}"
+
+
+def run_transfer_command(cmd: list[str], env: dict[str, str], stream_progress: bool) -> subprocess.CompletedProcess[str]:
+    if stream_progress:
+        proc = subprocess.run(cmd, env=env)
+        return subprocess.CompletedProcess(cmd, proc.returncode, "", "")
+    return subprocess.run(cmd, text=True, capture_output=True, env=env)
+
+
 def write_jsonl(path: Path, record: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
@@ -185,7 +198,7 @@ def build_upload_command(aws_path: str, target: dict[str, str], source: Path, ke
     cmd.extend(["s3", "cp", str(source), f"s3://{target['bucket']}/{key}"])
     if args.no_progress:
         cmd.append("--no-progress")
-    if args.only_show_errors:
+    if args.only_show_errors and args.no_progress:
         cmd.append("--only-show-errors")
     extra_args = target.get("extra_args", "")
     if extra_args:
@@ -332,7 +345,7 @@ def main() -> int:
                     log.write(f"$ {safe_cmd}\n")
                     log.flush()
                     t0 = time.monotonic()
-                    proc = subprocess.run(cmd, text=True, capture_output=True, env=env)
+                    proc = run_transfer_command(cmd, env, stream_progress=not args.no_progress)
                     elapsed_seconds = time.monotonic() - t0
                     ended = utc_now()
                     throughput_mbps = (size_bytes * 8 / elapsed_seconds / 1_000_000) if elapsed_seconds > 0 else None
@@ -341,6 +354,11 @@ def main() -> int:
                         log.write(proc.stderr)
                     log.write(f"## upload ended={ended} return_code={proc.returncode} elapsed_seconds={elapsed_seconds:.3f}\n")
                     log.flush()
+                    print(
+                        f"DONE upload provider={provider} file={source.name} "
+                        f"success={proc.returncode == 0} elapsed={elapsed_seconds:.3f}s "
+                        f"throughput_mbps={fmt_mbps(throughput_mbps)}"
+                    )
 
                     record = dict(base)
                     record.update({
