@@ -27,6 +27,7 @@ PROVIDERS = {
 REGION_LOCATIONS = {
     "eu-west-1": "Albi, France",
     "eu-south-2": "Aragon, Spain",
+    "eu-west-3": "Paris, France",
     "eu-west-2": "Paris, France",
     "eu-central-003": "Amsterdam, Netherlands",
     "us-west-2": "Oregon, USA",
@@ -107,6 +108,14 @@ def latest(data_dir: Path, pattern: str, fallback: str) -> Path:
     return matches[0] if matches else data_dir / fallback
 
 
+def first_config_value(parser: configparser.ConfigParser, section: str, keys: list[str]) -> str:
+    for key in keys:
+        value = parser.get(section, key, fallback="").strip()
+        if value:
+            return value
+    return ""
+
+
 def load_provider_labels(targets_path: Path) -> dict[str, dict[str, Any]]:
     labels: dict[str, dict[str, Any]] = {}
     if not targets_path.exists():
@@ -119,8 +128,8 @@ def load_provider_labels(targets_path: Path) -> dict[str, dict[str, Any]]:
         bucket = parser.get(section, "bucket", fallback="").strip()
         region = parser.get(section, "region", fallback="").strip()
         endpoint_url = parser.get(section, "endpoint_url", fallback="").strip()
-        name = PROVIDER_NAMES.get(provider, section)
-        location = REGION_LOCATIONS.get(region, "")
+        name = first_config_value(parser, section, ["display_name", "provider_name", "name"]) or PROVIDER_NAMES.get(provider, section)
+        location = first_config_value(parser, section, ["location", "region_location", "city_country"]) or REGION_LOCATIONS.get(region, "")
         label = {
             "name": name,
             "region": region,
