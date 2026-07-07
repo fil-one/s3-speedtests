@@ -2,6 +2,7 @@
 set -euo pipefail
 
 OUTPUT_DIR="${OUTPUT_DIR:-/dataoutput}"
+TARGETS_FILE="${TARGETS_FILE:-/testfiles/s3_targets.ini}"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 
 TXT_OUT="${OUTPUT_DIR}/s3_provider_traceroutes_${RUN_ID}.txt"
@@ -9,24 +10,15 @@ JSONL_OUT="${OUTPUT_DIR}/s3_provider_traceroutes_${RUN_ID}.jsonl"
 LATEST_TXT="${OUTPUT_DIR}/s3_provider_traceroutes.txt"
 LATEST_JSONL="${OUTPUT_DIR}/s3_provider_traceroutes.jsonl"
 
-mkdir -p "$OUTPUT_DIR"
-
-PROVIDERS=(
-  "Fil.one::eu-west-1 | Albi, France::eu-west-1.s3.fil.one"
-  "AWS::eu-south-2 | Aragon, Spain::s3.eu-south-2.amazonaws.com"
-  "Wasabi::eu-west-2 | Paris, France::s3.eu-west-2.wasabisys.com"
-  "Backblaze::eu-central-003 | Amsterdam, Netherlands::s3.eu-central-003.backblazeb2.com"
-  "AWS Oregon::us-west-2 | Oregon, USA::s3.us-west-2.amazonaws.com"
-)
-
 SELECTED_PROVIDERS=""
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/s3_provider_traceroutes.sh [--providers aws-us-west-2]
+Usage: scripts/s3_provider_traceroutes.sh [--targets /testfiles/s3_targets.ini] [--providers aws,wasabi]
 
-Runs TCP traceroutes to S3 provider endpoints. Use --providers with a comma-separated
-list to run only matching provider names, regions, endpoints, or aliases.
+Runs TCP traceroutes to enabled S3 provider endpoints from the target config.
+Use --providers with a comma-separated list to run only matching provider names,
+regions, endpoints, or aliases.
 USAGE
 }
 
@@ -36,6 +28,14 @@ while [[ $# -gt 0 ]]; do
       SELECTED_PROVIDERS="${2:-}"
       if [[ -z "$SELECTED_PROVIDERS" ]]; then
         echo "ERROR: --providers requires a comma-separated value" >&2
+        exit 2
+      fi
+      shift 2
+      ;;
+    --targets)
+      TARGETS_FILE="${2:-}"
+      if [[ -z "$TARGETS_FILE" ]]; then
+        echo "ERROR: --targets requires a path" >&2
         exit 2
       fi
       shift 2
@@ -51,6 +51,8 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+mkdir -p "$OUTPUT_DIR"
 
 provider_matches() {
   local provider_lc="${1,,}"
@@ -87,9 +89,95 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "ERROR: python3 is not installed. Install with: apt update && apt install -y python3"
+  exit 1
+fi
+
+if [[ ! -f "$TARGETS_FILE" ]]; then
+  echo "ERROR: target config not found: $TARGETS_FILE" >&2
+  exit 1
+fi
+
+mapfile -t PROVIDERS < <(python3 - "$TARGETS_FILE" <<'PY'
+import configparser
+import sys
+from urllib.parse import urlparse
+
+targets = sys.argv[1]
+parser = configparser.ConfigParser(interpolation=None)
+parser.read(targets)
+
+truthy = {"1", "yes", "true", "on", "enable", "enabled"}
+provider_names = {
+    "aws": "AWS",
+    "aws-test": "AWS",
+    "wasabi": "Wasabi",
+    "backblaze": "Backblaze",
+    "f1": "Fil.one",
+    "fil.one": "Fil.one",
+    "filone": "Fil.one",
+}
+region_locations = {
+    "eu-west-1": "Albi, France",
+    "eu-south-2": "Aragon, Spain",
+    "eu-west-3": "Paris, France",
+    "eu-west-2": "Paris, France",
+    "eu-central-003": "Amsterdam, Netherlands",
+    "us-west-2": "Oregon, USA",
+}
+
+def endpoint_host(endpoint_url: str) -> str:
+    endpoint_url = endpoint_url.strip()
+    if not endpoint_url:
+        return ""
+    parsed = urlparse(endpoint_url if "://" in endpoint_url else f"https://{endpoint_url}")
+    return (parsed.netloc or parsed.path).split("/")[0]
+
+def derived_endpoint(provider: str, region: str, endpoint_url: str) -> str:
+    host = endpoint_host(endpoint_url)
+    if host:
+        return host
+    if provider in {"aws", "aws-test"} and region:
+        return f"s3.{region}.amazonaws.com"
+    if provider == "wasabi" and region:
+        return f"s3.{region}.wasabisys.com"
+    if provider == "backblaze" and region:
+        return f"s3.{region}.backblazeb2.com"
+    if provider in {"f1", "fil.one", "filone"} and region:
+        return f"{region}.s3.fil.one"
+    return ""
+
+for section in parser.sections():
+    enabled = parser.get(section, "enabled", fallback="false").strip().lower()
+    if enabled not in truthy:
+        continue
+    provider = parser.get(section, "provider", fallback=section).strip().lower()
+    display_name = (
+        parser.get(section, "display_name", fallback="").strip()
+        or parser.get(section, "provider_name", fallback="").strip()
+        or parser.get(section, "name", fallback="").strip()
+        or provider_names.get(provider, section)
+    )
+    region = parser.get(section, "region", fallback="").strip()
+    location = (
+        parser.get(section, "location", fallback="").strip()
+        or parser.get(section, "region_location", fallback="").strip()
+        or parser.get(section, "city_country", fallback="").strip()
+        or region_locations.get(region, "")
+    )
+    endpoint = derived_endpoint(provider, region, parser.get(section, "endpoint_url", fallback=""))
+    if not endpoint:
+        continue
+    region_location = f"{region} | {location}" if region and location else region or location or "n/a"
+    print(f"{display_name}::{region_location}::{endpoint}")
+PY
+)
+
 echo "S3 Provider Traceroute Test" | tee "$TXT_OUT"
 echo "run_id=$RUN_ID" | tee -a "$TXT_OUT"
 echo "source_node=Cubepath VM Barcelona" | tee -a "$TXT_OUT"
+echo "targets_file=$TARGETS_FILE" | tee -a "$TXT_OUT"
 echo "timestamp_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a "$TXT_OUT"
 if [[ -n "$SELECTED_PROVIDERS" ]]; then
   echo "selected_providers=$SELECTED_PROVIDERS" | tee -a "$TXT_OUT"

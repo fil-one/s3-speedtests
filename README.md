@@ -119,6 +119,8 @@ Provider traceroutes:
 ./scripts/s3_provider_traceroutes.sh
 ```
 
+Traceroutes are generated only for enabled endpoints in `/testfiles/s3_targets.ini`. Use `--targets` to point at a different target config.
+
 Upload standard and large file sets together:
 
 ```bash
@@ -183,7 +185,7 @@ The report builder loads the latest available benchmark artifacts:
 - `/dataoutput/s3_download_speedtest_summary.jsonl` or the latest `s3_download_speedtest_summary_*.jsonl`
 - `/dataoutput/s3_provider_traceroutes.jsonl` or the latest `s3_provider_traceroutes_*.jsonl`
 
-Upload and download ranking cells include median throughput, average throughput, total elapsed time, and median elapsed time when available. The traceroute section includes the provider summary table plus the full CLI traceroute command output with hop lines.
+Upload and download ranking cells include median throughput, average throughput, total elapsed time, and median elapsed time when available. The traceroute section includes only enabled target endpoints from the target config, plus the full CLI traceroute command output with hop lines.
 
 Provider names and regions in the upload/download result tables are read from `/testfiles/s3_targets.ini`, so changing a bucket target region there changes the report label on the next report build. Optional `display_name` and `location` fields in each target section override the report label, for example `display_name = AWS` and `location = Paris, France`. Use `--targets` to point at a different target config.
 

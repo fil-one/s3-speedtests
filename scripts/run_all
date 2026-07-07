@@ -132,7 +132,7 @@ fi
 run_step "s3_write_profiles" "$SCRIPT_DIR/s3_write_profiles.py" "${PROFILE_ARGS[@]}"
 run_step "s3_access_check" "$SCRIPT_DIR/s3_access_check.py" "${ACCESS_ARGS[@]}"
 run_step "network_speedtest_ookla" env RUNS="$NETWORK_RUNS" SLEEP_BETWEEN_TESTS="$NETWORK_SLEEP_SECONDS" OUTPUT_DIR="$OUTPUT_DIR" "$SCRIPT_DIR/network_speedtest_ookla.sh"
-run_step "s3_provider_traceroutes" env OUTPUT_DIR="$OUTPUT_DIR" "$SCRIPT_DIR/s3_provider_traceroutes.sh"
+run_step "s3_provider_traceroutes" env OUTPUT_DIR="$OUTPUT_DIR" TARGETS_FILE="$TARGETS_FILE" "$SCRIPT_DIR/s3_provider_traceroutes.sh"
 run_step "s3_upload_standard" "$SCRIPT_DIR/s3_upload_speedtest.sh" "${UPLOAD_COMMON[@]}" --file-set standard
 run_step "s3_upload_large" "$SCRIPT_DIR/s3_upload_speedtest.sh" "${UPLOAD_COMMON[@]}" --file-set large
 run_step "s3_download_full" "$SCRIPT_DIR/s3_download_speedtest.sh" "${DOWNLOAD_COMMON[@]}" --file-set full

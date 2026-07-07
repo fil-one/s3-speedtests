@@ -13,6 +13,7 @@ from pathlib import Path
 import subprocess
 import sys
 from typing import Any
+from urllib.parse import urlparse
 
 PROVIDERS = {
     "f1": ("Fil.one", "eu-west-1", "Albi, France"),
@@ -97,6 +98,12 @@ def provider_key(value: str) -> str:
     return value.strip().lower()
 
 
+def bool_value(value: str | None, default: bool = False) -> bool:
+    if value is None or value == "":
+        return default
+    return value.strip().lower() in {"1", "yes", "true", "on", "enable", "enabled"}
+
+
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
@@ -116,6 +123,30 @@ def first_config_value(parser: configparser.ConfigParser, section: str, keys: li
     return ""
 
 
+def endpoint_host(endpoint_url: str) -> str:
+    endpoint_url = endpoint_url.strip()
+    if not endpoint_url:
+        return ""
+    parsed = urlparse(endpoint_url if "://" in endpoint_url else f"https://{endpoint_url}")
+    return (parsed.netloc or parsed.path).split("/")[0]
+
+
+def derived_endpoint(provider: str, region: str, endpoint_url: str) -> str:
+    host = endpoint_host(endpoint_url)
+    if host:
+        return host
+    provider = provider_key(provider)
+    if provider in {"aws", "aws-test"} and region:
+        return f"s3.{region}.amazonaws.com"
+    if provider == "wasabi" and region:
+        return f"s3.{region}.wasabisys.com"
+    if provider == "backblaze" and region:
+        return f"s3.{region}.backblazeb2.com"
+    if provider in {"f1", "fil.one", "filone"} and region:
+        return f"{region}.s3.fil.one"
+    return ""
+
+
 def load_provider_labels(targets_path: Path) -> dict[str, dict[str, Any]]:
     labels: dict[str, dict[str, Any]] = {}
     if not targets_path.exists():
@@ -128,6 +159,8 @@ def load_provider_labels(targets_path: Path) -> dict[str, dict[str, Any]]:
         bucket = parser.get(section, "bucket", fallback="").strip()
         region = parser.get(section, "region", fallback="").strip()
         endpoint_url = parser.get(section, "endpoint_url", fallback="").strip()
+        enabled = bool_value(parser.get(section, "enabled", fallback="false"))
+        endpoint = derived_endpoint(provider, region, endpoint_url)
         name = first_config_value(parser, section, ["display_name", "provider_name", "name"]) or PROVIDER_NAMES.get(provider, section)
         location = first_config_value(parser, section, ["location", "region_location", "city_country"]) or REGION_LOCATIONS.get(region, "")
         label = {
@@ -137,6 +170,8 @@ def load_provider_labels(targets_path: Path) -> dict[str, dict[str, Any]]:
             "bucket": bucket,
             "section": section,
             "endpoint_url": endpoint_url,
+            "endpoint": endpoint,
+            "enabled": enabled,
         }
         labels[f"section:{section}"] = label
         labels[f"provider:{provider}"] = label
@@ -145,6 +180,22 @@ def load_provider_labels(targets_path: Path) -> dict[str, dict[str, Any]]:
         if provider and bucket:
             labels[f"provider_bucket:{provider}:{bucket}"] = label
     return labels
+
+
+def enabled_traceroute_endpoints(provider_labels: dict[str, dict[str, Any]]) -> set[str]:
+    endpoints = {
+        str(label.get("endpoint") or "").lower()
+        for label in provider_labels.values()
+        if label.get("enabled") and label.get("endpoint")
+    }
+    return {endpoint for endpoint in endpoints if endpoint}
+
+
+def filter_traceroute_records(records: list[dict[str, Any]], endpoints: set[str]) -> list[dict[str, Any]]:
+    rows = [r for r in records if r.get("test_type") == "tcp_traceroute_443"]
+    if not endpoints:
+        return rows
+    return [r for r in rows if str(r.get("endpoint") or "").lower() in endpoints]
 
 
 def command_text(cmd: list[str]) -> str:
@@ -494,7 +545,7 @@ def add_ranked_table(doc: Document, title: str, rows: list[tuple[float, list[dic
 
 
 def add_network_table(doc: Document, records: list[dict[str, Any]]) -> None:
-    add_heading(doc, "Node Network Baseline", 2)
+    add_heading(doc, "Node Network Baseline (Speedtest by Ookla)", 2)
     rows = [r for r in records if r.get("record_type") == "network_speedtest_summary"]
     if not rows:
         add_body(doc, "No Ookla network summary records were found.")
@@ -512,9 +563,9 @@ def add_network_table(doc: Document, records: list[dict[str, Any]]) -> None:
     style_table(table, [1.25, 1.15, 1.35, 1.35, 1.0])
 
 
-def add_traceroute_table(doc: Document, records: list[dict[str, Any]]) -> None:
+def add_traceroute_table(doc: Document, records: list[dict[str, Any]], endpoints: set[str]) -> None:
     add_heading(doc, "Provider Traceroutes", 2)
-    rows = [r for r in records if r.get("test_type") == "tcp_traceroute_443"]
+    rows = filter_traceroute_records(records, endpoints)
     if not rows:
         add_body(doc, "No provider traceroute records were found.")
         return
@@ -672,8 +723,6 @@ def create_doc(args: argparse.Namespace) -> Path:
     add_body(doc, f"Prepared from JSONL benchmark output in {data_dir}. Rankings in the transfer tables are ordered fastest to slowest from left to right using median throughput.")
     add_heading(doc, "Test Node", 2)
     add_specs_table(doc, args)
-    add_heading(doc, "Provider Labels", 2)
-    add_body(doc, provider_labels_text(provider_labels))
     add_network_table(doc, report_data["network_records"])
     add_heading(doc, "File Size Tests", 2)
     add_body(doc, "The benchmark file sizes represented in the loaded results are: " + ", ".join(fmt_size(size) for size in report_data["sizes"]) + ".")
@@ -684,7 +733,7 @@ def create_doc(args: argparse.Namespace) -> Path:
 
     doc.add_section(WD_SECTION.NEW_PAGE)
     add_ranked_table(doc, "Download Results: All File Sizes", ranked_by_size(report_data["download"]), provider_labels)
-    add_traceroute_table(doc, report_data["traceroute_records"])
+    add_traceroute_table(doc, report_data["traceroute_records"], enabled_traceroute_endpoints(provider_labels))
 
     add_heading(doc, "Key Takeaways", 2)
     takeaways = [
@@ -779,7 +828,7 @@ def pdf_add_ranked_table(story: list[Any], title: str, rows: list[tuple[float, l
 
 
 def pdf_add_network_table(story: list[Any], records: list[dict[str, Any]], styles: dict[str, Any]) -> None:
-    pdf_add_heading(story, "Node Network Baseline", styles)
+    pdf_add_heading(story, "Node Network Baseline (Speedtest by Ookla)", styles)
     rows = [r for r in records if r.get("record_type") == "network_speedtest_summary"]
     if not rows:
         pdf_add_body(story, "No Ookla network summary records were found.", styles)
@@ -800,9 +849,9 @@ def pdf_trace_output(text: str) -> str:
     return "\n".join(text.splitlines() or [""])
 
 
-def pdf_add_traceroutes(story: list[Any], records: list[dict[str, Any]], styles: dict[str, Any]) -> None:
+def pdf_add_traceroutes(story: list[Any], records: list[dict[str, Any]], styles: dict[str, Any], endpoints: set[str]) -> None:
     pdf_add_heading(story, "Provider Traceroutes", styles)
-    rows = [r for r in records if r.get("test_type") == "tcp_traceroute_443"]
+    rows = filter_traceroute_records(records, endpoints)
     if not rows:
         pdf_add_body(story, "No provider traceroute records were found.", styles)
         return
@@ -857,8 +906,6 @@ def create_pdf(args: argparse.Namespace) -> Path:
     pdf_add_body(story, f"Prepared from JSONL benchmark output in {data_dir}. Rankings in the transfer tables are ordered fastest to slowest from left to right using median throughput.", styles)
     pdf_add_heading(story, "Test Node", styles)
     pdf_add_specs_table(story, args, styles)
-    pdf_add_heading(story, "Provider Labels", styles)
-    pdf_add_body(story, provider_labels_text(provider_labels), styles)
     pdf_add_network_table(story, report_data["network_records"], styles)
     pdf_add_heading(story, "File Size Tests", styles)
     sizes = ", ".join(fmt_size(size) for size in report_data["sizes"]) or "none"
@@ -870,7 +917,7 @@ def create_pdf(args: argparse.Namespace) -> Path:
 
     story.append(PageBreak())
     pdf_add_ranked_table(story, "Download Results: All File Sizes", ranked_by_size(report_data["download"]), styles, provider_labels)
-    pdf_add_traceroutes(story, report_data["traceroute_records"], styles)
+    pdf_add_traceroutes(story, report_data["traceroute_records"], styles, enabled_traceroute_endpoints(provider_labels))
 
     pdf_add_heading(story, "Key Takeaways", styles)
     for text in [
