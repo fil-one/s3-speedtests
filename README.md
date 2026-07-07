@@ -159,6 +159,8 @@ The report builder loads the latest available benchmark artifacts:
 
 Upload and download ranking cells include median throughput, average throughput, total elapsed time, and median elapsed time when available. The traceroute section includes the provider summary table plus the full CLI traceroute command output with hop lines.
 
+Provider names and regions in the upload/download result tables are read from `/testfiles/s3_targets.ini`, so changing a bucket target region there changes the report label on the next report build. Use `--targets` to point at a different target config.
+
 When run interactively, the report builder prompts for the source node provider/name and source node location. It auto-detects hostname, vCPU count, and RAM from the VM.
 
 Prompted run:
@@ -199,6 +201,7 @@ Use explicit input and output directories when rebuilding a report from archived
 ```bash
 ./scripts/build_summary_report.py \
   --format both \
+  --targets /testfiles/s3_targets.ini \
   --data-dir /dataoutput \
   --output-dir /dataoutput/reports
 ```

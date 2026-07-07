@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import configparser
 import datetime as dt
 import html
 import json
@@ -21,6 +22,24 @@ PROVIDERS = {
     "aws-test": ("AWS", "eu-south-2", "Aragon, Spain"),
     "wasabi": ("Wasabi", "eu-west-2", "Paris, France"),
     "backblaze": ("Backblaze", "eu-central-003", "Amsterdam, Netherlands"),
+}
+
+REGION_LOCATIONS = {
+    "eu-west-1": "Albi, France",
+    "eu-south-2": "Aragon, Spain",
+    "eu-west-2": "Paris, France",
+    "eu-central-003": "Amsterdam, Netherlands",
+    "us-west-2": "Oregon, USA",
+}
+
+PROVIDER_NAMES = {
+    "f1": "Fil.one",
+    "fil.one": "Fil.one",
+    "filone": "Fil.one",
+    "aws": "AWS",
+    "aws-test": "AWS",
+    "wasabi": "Wasabi",
+    "backblaze": "Backblaze",
 }
 
 
@@ -86,6 +105,37 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
 def latest(data_dir: Path, pattern: str, fallback: str) -> Path:
     matches = sorted(data_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
     return matches[0] if matches else data_dir / fallback
+
+
+def load_provider_labels(targets_path: Path) -> dict[str, dict[str, Any]]:
+    labels: dict[str, dict[str, Any]] = {}
+    if not targets_path.exists():
+        return labels
+
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.read(targets_path)
+    for section in parser.sections():
+        provider = provider_key(parser.get(section, "provider", fallback=section))
+        bucket = parser.get(section, "bucket", fallback="").strip()
+        region = parser.get(section, "region", fallback="").strip()
+        endpoint_url = parser.get(section, "endpoint_url", fallback="").strip()
+        name = PROVIDER_NAMES.get(provider, section)
+        location = REGION_LOCATIONS.get(region, "")
+        label = {
+            "name": name,
+            "region": region,
+            "location": location,
+            "bucket": bucket,
+            "section": section,
+            "endpoint_url": endpoint_url,
+        }
+        labels[f"section:{section}"] = label
+        labels[f"provider:{provider}"] = label
+        if bucket:
+            labels[f"bucket:{bucket}"] = label
+        if provider and bucket:
+            labels[f"provider_bucket:{provider}:{bucket}"] = label
+    return labels
 
 
 def command_text(cmd: list[str]) -> str:
@@ -191,13 +241,45 @@ def fmt_trace_ips(value: Any) -> str:
     return str(value)
 
 
-def provider_label(provider: str) -> str:
-    name, region, location = PROVIDERS[provider_key(provider)]
-    return f"{name}\n({region} | {location})"
+def label_from_row(row: dict[str, Any], provider_labels: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    provider = provider_key(str(row.get("provider", "")))
+    bucket = str(row.get("bucket", "")).strip()
+    section = str(row.get("target_section", "")).strip()
+    for key in (
+        f"section:{section}" if section else "",
+        f"provider_bucket:{provider}:{bucket}" if provider and bucket else "",
+        f"bucket:{bucket}" if bucket else "",
+        f"provider:{provider}" if provider else "",
+    ):
+        if key and key in provider_labels:
+            return provider_labels[key]
+
+    default_name, default_region, default_location = PROVIDERS.get(provider, (row.get("provider") or "Provider", "", ""))
+    region = str(row.get("region") or default_region or "").strip()
+    return {
+        "name": PROVIDER_NAMES.get(provider, default_name),
+        "region": region,
+        "location": REGION_LOCATIONS.get(region, default_location if region == default_region else ""),
+        "bucket": bucket,
+        "section": section,
+        "endpoint_url": row.get("endpoint_url", ""),
+    }
+
+
+def provider_label(row: dict[str, Any], provider_labels: dict[str, dict[str, Any]]) -> str:
+    label = label_from_row(row, provider_labels)
+    region = str(label.get("region") or "").strip()
+    location = str(label.get("location") or "").strip()
+    if region and location:
+        return f"{label['name']}\n({region} | {location})"
+    if region:
+        return f"{label['name']}\n({region})"
+    return str(label["name"])
 
 
 def compact_provider(provider: str) -> str:
-    return PROVIDERS[provider_key(provider)][0]
+    key = provider_key(provider)
+    return PROVIDER_NAMES.get(key, PROVIDERS.get(key, (provider, "", ""))[0])
 
 
 def summary_total_elapsed(record: dict[str, Any]) -> float | None:
@@ -214,9 +296,9 @@ def summary_total_elapsed(record: dict[str, Any]) -> float | None:
         return None
 
 
-def transfer_cell_text(row: dict[str, Any]) -> str:
+def transfer_cell_text(row: dict[str, Any], provider_labels: dict[str, dict[str, Any]]) -> str:
     lines = [
-        provider_label(row["provider"]),
+        provider_label(row, provider_labels),
         f"Median {fmt_mbps(row['median_mbps'])}",
         f"Avg {fmt_mbps(row['avg_mbps'])}",
         f"Total time {fmt_seconds(row.get('total_elapsed_seconds'))}",
@@ -251,6 +333,10 @@ def transfer_rows(records: list[dict[str, Any]], record_type: str, file_set: str
             continue
         rows.append({
             "provider": provider,
+            "bucket": record.get("bucket", ""),
+            "target_section": record.get("target_section", ""),
+            "region": record.get("region", ""),
+            "endpoint_url": record.get("endpoint_url", ""),
             "size_mib": float(record["file_size_mib"]),
             "attempts": record.get("attempt_count"),
             "successes": record.get("success_count"),
@@ -378,7 +464,7 @@ def add_monospace_block(doc: Document, text: str) -> None:
             run.bold = False
 
 
-def add_ranked_table(doc: Document, title: str, rows: list[tuple[float, list[dict[str, Any]]]]) -> None:
+def add_ranked_table(doc: Document, title: str, rows: list[tuple[float, list[dict[str, Any]]]], provider_labels: dict[str, dict[str, Any]]) -> None:
     add_heading(doc, title, 2)
     if not rows:
         add_body(doc, "No matching summary records were found for this section.")
@@ -393,7 +479,7 @@ def add_ranked_table(doc: Document, title: str, rows: list[tuple[float, list[dic
             text = "n/a"
             if idx < len(members):
                 m = members[idx]
-                text = transfer_cell_text(m)
+                text = transfer_cell_text(m, provider_labels)
             set_cell_text(cells[idx + 1], text, bold_first_line=True, font_size=7.2)
     style_table(table, [0.75, 1.43, 1.43, 1.43, 1.43])
 
@@ -509,6 +595,28 @@ def load_report_data(data_dir: Path) -> dict[str, Any]:
     }
 
 
+def provider_labels_text(provider_labels: dict[str, dict[str, Any]]) -> str:
+    labels_by_name_region: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for label in provider_labels.values():
+        name = str(label.get("name") or "").strip()
+        region = str(label.get("region") or "").strip()
+        location = str(label.get("location") or "").strip()
+        if name:
+            labels_by_name_region[(name, region, location)] = label
+    if not labels_by_name_region:
+        return "Provider titles use the provider, region, and bucket metadata from the loaded benchmark output."
+
+    parts = []
+    for name, region, location in sorted(labels_by_name_region):
+        if region and location:
+            parts.append(f"{name} ({region} | {location})")
+        elif region:
+            parts.append(f"{name} ({region})")
+        else:
+            parts.append(name)
+    return "Provider titles from target config: " + ", ".join(parts) + "."
+
+
 def style_document(doc: Document) -> None:
     section = doc.sections[0]
     section.top_margin = Inches(1)
@@ -537,6 +645,7 @@ def create_doc(args: argparse.Namespace) -> Path:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     report_data = load_report_data(data_dir)
+    provider_labels = load_provider_labels(Path(args.targets))
 
     stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     docx = output_dir / f"s3_provider_speedtest_summary_{stamp}.docx"
@@ -555,17 +664,17 @@ def create_doc(args: argparse.Namespace) -> Path:
     add_heading(doc, "Test Node", 2)
     add_specs_table(doc, args)
     add_heading(doc, "Provider Labels", 2)
-    add_body(doc, "Provider titles: Fil.one (eu-west-1 | Albi, France), AWS (eu-south-2 | Aragon, Spain), Wasabi (eu-west-2 | Paris, France), and Backblaze (eu-central-003 | Amsterdam, Netherlands).")
+    add_body(doc, provider_labels_text(provider_labels))
     add_network_table(doc, report_data["network_records"])
     add_heading(doc, "File Size Tests", 2)
     add_body(doc, "The benchmark file sizes represented in the loaded results are: " + ", ".join(fmt_size(size) for size in report_data["sizes"]) + ".")
 
     doc.add_section(WD_SECTION.NEW_PAGE)
-    add_ranked_table(doc, "Upload Results: Small / Standard File Set", ranked_by_size(report_data["upload_standard"]))
-    add_ranked_table(doc, "Upload Results: Large File Set", ranked_by_size(report_data["upload_large"]))
+    add_ranked_table(doc, "Upload Results: Small / Standard File Set", ranked_by_size(report_data["upload_standard"]), provider_labels)
+    add_ranked_table(doc, "Upload Results: Large File Set", ranked_by_size(report_data["upload_large"]), provider_labels)
 
     doc.add_section(WD_SECTION.NEW_PAGE)
-    add_ranked_table(doc, "Download Results: All File Sizes", ranked_by_size(report_data["download"]))
+    add_ranked_table(doc, "Download Results: All File Sizes", ranked_by_size(report_data["download"]), provider_labels)
     add_traceroute_table(doc, report_data["traceroute_records"])
 
     add_heading(doc, "Key Takeaways", 2)
@@ -642,7 +751,7 @@ def pdf_add_specs_table(story: list[Any], args: argparse.Namespace, styles: dict
     story.append(Spacer(1, 0.08 * inch))
 
 
-def pdf_add_ranked_table(story: list[Any], title: str, rows: list[tuple[float, list[dict[str, Any]]]], styles: dict[str, Any]) -> None:
+def pdf_add_ranked_table(story: list[Any], title: str, rows: list[tuple[float, list[dict[str, Any]]]], styles: dict[str, Any], provider_labels: dict[str, dict[str, Any]]) -> None:
     pdf_add_heading(story, title, styles)
     if not rows:
         pdf_add_body(story, "No matching summary records were found for this section.", styles)
@@ -654,7 +763,7 @@ def pdf_add_ranked_table(story: list[Any], title: str, rows: list[tuple[float, l
             text = "n/a"
             if idx < len(members):
                 member = members[idx]
-                text = transfer_cell_text(member)
+                text = transfer_cell_text(member, provider_labels)
             row.append(text)
         table_rows.append(row)
     story.append(pdf_table(table_rows, [0.9, 2.1, 2.1, 2.1, 2.1], styles))
@@ -720,6 +829,7 @@ def create_pdf(args: argparse.Namespace) -> Path:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     report_data = load_report_data(data_dir)
+    provider_labels = load_provider_labels(Path(args.targets))
 
     stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     pdf = output_dir / f"s3_provider_speedtest_summary_{stamp}.pdf"
@@ -739,18 +849,18 @@ def create_pdf(args: argparse.Namespace) -> Path:
     pdf_add_heading(story, "Test Node", styles)
     pdf_add_specs_table(story, args, styles)
     pdf_add_heading(story, "Provider Labels", styles)
-    pdf_add_body(story, "Provider titles: Fil.one (eu-west-1 | Albi, France), AWS (eu-south-2 | Aragon, Spain), Wasabi (eu-west-2 | Paris, France), and Backblaze (eu-central-003 | Amsterdam, Netherlands).", styles)
+    pdf_add_body(story, provider_labels_text(provider_labels), styles)
     pdf_add_network_table(story, report_data["network_records"], styles)
     pdf_add_heading(story, "File Size Tests", styles)
     sizes = ", ".join(fmt_size(size) for size in report_data["sizes"]) or "none"
     pdf_add_body(story, "The benchmark file sizes represented in the loaded results are: " + sizes + ".", styles)
 
     story.append(PageBreak())
-    pdf_add_ranked_table(story, "Upload Results: Small / Standard File Set", ranked_by_size(report_data["upload_standard"]), styles)
-    pdf_add_ranked_table(story, "Upload Results: Large File Set", ranked_by_size(report_data["upload_large"]), styles)
+    pdf_add_ranked_table(story, "Upload Results: Small / Standard File Set", ranked_by_size(report_data["upload_standard"]), styles, provider_labels)
+    pdf_add_ranked_table(story, "Upload Results: Large File Set", ranked_by_size(report_data["upload_large"]), styles, provider_labels)
 
     story.append(PageBreak())
-    pdf_add_ranked_table(story, "Download Results: All File Sizes", ranked_by_size(report_data["download"]), styles)
+    pdf_add_ranked_table(story, "Download Results: All File Sizes", ranked_by_size(report_data["download"]), styles, provider_labels)
     pdf_add_traceroutes(story, report_data["traceroute_records"], styles)
 
     pdf_add_heading(story, "Key Takeaways", styles)
@@ -769,6 +879,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Build a DOCX or PDF report from benchmark JSONL output.")
     parser.add_argument("--data-dir", default="/dataoutput", help="Directory containing JSONL benchmark output")
     parser.add_argument("--output-dir", default="/dataoutput/reports", help="Directory for generated reports")
+    parser.add_argument("--targets", default="/testfiles/s3_targets.ini", help="INI file with bucket/provider targets used for provider labels")
     parser.add_argument("--format", choices=["docx", "pdf", "both"], default="docx", help="Report output format")
     parser.add_argument("--source-provider", "--node-name", dest="source_provider", default="", help="Source node provider/name; prompted when omitted in an interactive terminal")
     parser.add_argument("--source-location", "--node-location", dest="source_location", default="", help="Source node location; prompted when omitted in an interactive terminal")
