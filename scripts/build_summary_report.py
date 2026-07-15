@@ -9,6 +9,7 @@ import datetime as dt
 import html
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -291,6 +292,23 @@ def fmt_ms(value: Any) -> str:
         return f"{float(value):.2f} ms"
     except (TypeError, ValueError):
         return str(value)
+
+
+def traceroute_total_ms(record: dict[str, Any]) -> float | None:
+    for key in ("total_ms", "final_hop_avg_ms", "last_responding_hop_avg_ms"):
+        value = record.get(key)
+        if value is not None and value != "":
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                pass
+
+    trace_output = str(record.get("trace_output") or "")
+    for line in reversed(trace_output.splitlines()):
+        samples = [float(match.group(1)) for match in re.finditer(r"([0-9]+(?:\.[0-9]+)?)\s*ms\b", line)]
+        if samples:
+            return sum(samples) / len(samples)
+    return None
 
 
 def fmt_trace_ips(value: Any) -> str:
@@ -583,7 +601,7 @@ def add_traceroute_table(doc: Document, records: list[dict[str, Any]], endpoints
         set_cell_text(cells[2], str(r.get("endpoint") or "n/a"), font_size=6.2)
         set_cell_text(cells[3], str(r.get("status") or "n/a"), font_size=7.0)
         set_cell_text(cells[4], str(r.get("hop_count") if r.get("hop_count") is not None else "n/a"), font_size=7.0)
-        set_cell_text(cells[5], fmt_ms(r.get("total_ms") if r.get("total_ms") is not None else r.get("final_hop_avg_ms")), font_size=7.0)
+        set_cell_text(cells[5], fmt_ms(traceroute_total_ms(r)), font_size=7.0)
         set_cell_text(cells[6], fmt_trace_ips(r.get("resolved_ipv4_addresses")), font_size=6.2)
 
     style_table(table, [0.85, 1.05, 1.45, 0.55, 0.45, 0.75, 1.4])
@@ -593,7 +611,7 @@ def add_traceroute_table(doc: Document, records: list[dict[str, Any]], endpoints
         add_body(doc, f"Traceroute source: TCP port 443 traceroute JSONL, latest included run_id {run_ids[-1]}. Total ms is the average RTT from the last responding hop in the traceroute output.")
 
     for r in rows:
-        total_ms = fmt_ms(r.get("total_ms") if r.get("total_ms") is not None else r.get("final_hop_avg_ms"))
+        total_ms = fmt_ms(traceroute_total_ms(r))
         label = f"{r.get('provider') or 'Provider'} - {r.get('endpoint') or 'endpoint'} - total {total_ms}"
         add_body(doc, label)
         add_monospace_block(doc, full_traceroute_block(r))
@@ -864,7 +882,7 @@ def pdf_add_traceroutes(story: list[Any], records: list[dict[str, Any]], styles:
             row.get("endpoint") or "n/a",
             row.get("status") or "n/a",
             row.get("hop_count") if row.get("hop_count") is not None else "n/a",
-            fmt_ms(row.get("total_ms") if row.get("total_ms") is not None else row.get("final_hop_avg_ms")),
+            fmt_ms(traceroute_total_ms(row)),
             fmt_trace_ips(row.get("resolved_ipv4_addresses")),
         ])
     story.append(pdf_table(table_rows, [0.9, 1.2, 2.2, 0.75, 0.55, 0.8, 1.6], styles))
@@ -874,7 +892,7 @@ def pdf_add_traceroutes(story: list[Any], records: list[dict[str, Any]], styles:
         pdf_add_body(story, f"Traceroute source: TCP port 443 traceroute JSONL, latest included run_id {run_ids[-1]}. Total ms is the average RTT from the last responding hop in the traceroute output.", styles)
 
     for row in rows:
-        total_ms = fmt_ms(row.get("total_ms") if row.get("total_ms") is not None else row.get("final_hop_avg_ms"))
+        total_ms = fmt_ms(traceroute_total_ms(row))
         label = f"{row.get('provider') or 'Provider'} - {row.get('endpoint') or 'endpoint'} - total {total_ms}"
         story.append(Paragraph(html.escape(label), styles["body"]))
         story.append(Preformatted(pdf_trace_output(full_traceroute_block(row)), styles["mono"]))

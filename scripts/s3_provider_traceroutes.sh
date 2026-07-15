@@ -230,12 +230,8 @@ for item in "${PROVIDERS[@]}"; do
   last_hop="$(grep -E '^[[:space:]]*[0-9]+' "$trace_tmp" | tail -1 || true)"
   trace_output="$(cat "$trace_tmp")"
   total_ms="$(awk '
-    /^[[:space:]]*[0-9]+/ { line = $0 }
-    END {
-      if (line == "") {
-        exit
-      }
-      n = split(line, parts, /[[:space:]]+/)
+    /^[[:space:]]*[0-9]+/ {
+      n = split($0, parts, /[[:space:]]+/)
       sum = 0
       count = 0
       for (i = 1; i <= n; i++) {
@@ -245,7 +241,12 @@ for item in "${PROVIDERS[@]}"; do
         }
       }
       if (count > 0) {
-        printf "%.3f", sum / count
+        last_responding_avg = sum / count
+      }
+    }
+    END {
+      if (last_responding_avg != "") {
+        printf "%.3f", last_responding_avg
       }
     }
   ' "$trace_tmp")"
