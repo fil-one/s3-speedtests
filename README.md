@@ -173,6 +173,41 @@ Watch newest logs:
 tail -f "$(ls -t /dataoutput/*.log | head -n 1)"
 ```
 
+
+### Cleanup Test Objects
+
+Preview deletion of test objects from all enabled providers. This is a dry run by default:
+
+```bash
+./scripts/s3_cleanup_test_files.py
+```
+
+Actually delete each provider's configured test prefix from all enabled providers:
+
+```bash
+./scripts/s3_cleanup_test_files.py --execute
+```
+
+Clean only selected providers:
+
+```bash
+./scripts/s3_cleanup_test_files.py --providers aws,wasabi --execute
+```
+
+Delete a specific prefix instead of each provider's configured `prefix`:
+
+```bash
+./scripts/s3_cleanup_test_files.py --providers f1 --prefix test/20260715T185306Z --execute
+```
+
+Delete all objects in selected buckets:
+
+```bash
+./scripts/s3_cleanup_test_files.py --providers f1 --entire-bucket --execute
+```
+
+Cleanup audit records are written to `/dataoutput/s3_cleanup_test_files.jsonl`.
+
 ## Report Builder
 
 Build a summary report from JSONL output in `/dataoutput`:
