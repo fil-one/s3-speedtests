@@ -2,8 +2,10 @@
 set -uo pipefail
 
 OUTPUT_DIR="${OUTPUT_DIR:-/dataoutput}"
-RUNS="${RUNS:-3}"
+RUNS="${RUNS:-1}"
 SPEEDTEST_TIMEOUT="${SPEEDTEST_TIMEOUT:-240}"
+NETWORK_SERVER_MODE="${NETWORK_SERVER_MODE:-auto}"
+SLEEP_BETWEEN_TESTS="${SLEEP_BETWEEN_TESTS:-5}"
 
 RUNS_FILE="${OUTPUT_DIR}/network_speedtest_ookla_runs.jsonl"
 SUMMARY_FILE="${OUTPUT_DIR}/network_speedtest_ookla_summary.jsonl"
@@ -19,11 +21,6 @@ fi
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "ERROR: jq not found. Install with: apt install -y jq" >&2
-  exit 1
-fi
-
-if ! command -v curl >/dev/null 2>&1; then
-  echo "ERROR: curl not found. Install with: apt install -y curl" >&2
   exit 1
 fi
 
@@ -48,6 +45,8 @@ GEO_LOCATIONS=(
 echo "Starting Ookla network baseline"
 echo "runs_per_server=$RUNS"
 echo "speedtest_timeout_seconds=$SPEEDTEST_TIMEOUT"
+echo "network_server_mode=$NETWORK_SERVER_MODE"
+echo "sleep_between_tests=$SLEEP_BETWEEN_TESTS"
 echo "runs_file=$RUNS_FILE"
 echo "summary_file=$SUMMARY_FILE"
 echo "combined_file=$COMBINED_FILE"
@@ -66,16 +65,30 @@ find_server_id_by_geo() {
     | jq -r '.[0].id // empty'
 }
 
+run_with_optional_timeout() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$SPEEDTEST_TIMEOUT" "$@"
+  else
+    "$@"
+  fi
+}
+
 run_speedtest() {
   local label="$1"
   local server_id="$2"
   local run_index="$3"
-  local tmp_json="/tmp/ookla_${label}_${server_id}_${run_index}.json"
+  local safe_server_id="${server_id:-auto}"
+  local tmp_json="/tmp/ookla_${label}_${safe_server_id}_${run_index}.json"
+  local cmd=(speedtest --format=json --accept-license --accept-gdpr)
 
-  echo "Running label=$label server_id=$server_id run=$run_index"
+  if [[ -n "$server_id" ]]; then
+    cmd+=(--server-id "$server_id")
+  fi
 
-  if ! timeout "$SPEEDTEST_TIMEOUT" speedtest --server-id "$server_id" --format=json --accept-license --accept-gdpr > "$tmp_json"; then
-    echo "WARNING: speedtest failed or timed out for label=$label server_id=$server_id run=$run_index" >&2
+  echo "Running label=$label server_id=${server_id:-auto} run=$run_index"
+
+  if ! run_with_optional_timeout "${cmd[@]}" > "$tmp_json"; then
+    echo "WARNING: speedtest failed or timed out for label=$label server_id=${server_id:-auto} run=$run_index" >&2
     rm -f "$tmp_json"
     return 0
   fi
@@ -93,7 +106,7 @@ run_speedtest() {
       tool_vendor: "Ookla",
       target_label: $label,
       run_index: $run_index,
-      target_server_id: $server_id,
+      target_server_id: (if $server_id == "" then (.server.id | tostring) else $server_id end),
       target_server_name: .server.name,
       target_city: .server.location,
       target_country: .server.country,
@@ -115,34 +128,74 @@ run_speedtest() {
   rm -f "$tmp_json"
 }
 
-echo "Fixed servers:"
 ALL_SERVERS=()
 
-for item in "${FIXED_SERVERS[@]}"; do
-  label="${item%%|*}"
-  server_id="${item##*|}"
-  echo "  $label -> $server_id"
-  ALL_SERVERS+=("${label}|${server_id}")
-done
+case "$NETWORK_SERVER_MODE" in
+  auto)
+    echo "Auto server selection:"
+    echo "  auto_nearest -> Ookla-selected nearest/best server"
+    ALL_SERVERS+=("auto_nearest|")
+    ;;
+  fixed|legacy_fixed)
+    echo "Fixed servers:"
+    for item in "${FIXED_SERVERS[@]}"; do
+      label="${item%%|*}"
+      server_id="${item##*|}"
+      echo "  $label -> $server_id"
+      ALL_SERVERS+=("${label}|${server_id}")
+    done
+    ;;
+  geo)
+    ;;
+  all)
+    echo "Auto server selection:"
+    echo "  auto_nearest -> Ookla-selected nearest/best server"
+    ALL_SERVERS+=("auto_nearest|")
+    echo
+    echo "Fixed servers:"
+    for item in "${FIXED_SERVERS[@]}"; do
+      label="${item%%|*}"
+      server_id="${item##*|}"
+      echo "  $label -> $server_id"
+      ALL_SERVERS+=("${label}|${server_id}")
+    done
+    ;;
+  *)
+    echo "ERROR: NETWORK_SERVER_MODE must be auto, fixed, legacy_fixed, geo, or all" >&2
+    exit 2
+    ;;
+esac
 
-echo
-echo "Searching geo servers:"
-
-for item in "${GEO_LOCATIONS[@]}"; do
-  label="$(echo "$item" | cut -d'|' -f1)"
-  lat="$(echo "$item" | cut -d'|' -f2)"
-  lon="$(echo "$item" | cut -d'|' -f3)"
-
-  server_id="$(find_server_id_by_geo "$lat" "$lon" || true)"
-
-  if [[ -z "$server_id" ]]; then
-    echo "  WARNING: no server found for $label lat=$lat lon=$lon; skipping"
-    continue
+if [[ "$NETWORK_SERVER_MODE" == "geo" || "$NETWORK_SERVER_MODE" == "all" ]]; then
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "ERROR: curl not found. Install with: apt install -y curl" >&2
+    exit 1
   fi
 
-  echo "  $label lat=$lat lon=$lon -> server_id=$server_id"
-  ALL_SERVERS+=("${label}|${server_id}")
-done
+  echo
+  echo "Searching geo servers:"
+
+  for item in "${GEO_LOCATIONS[@]}"; do
+    label="$(echo "$item" | cut -d'|' -f1)"
+    lat="$(echo "$item" | cut -d'|' -f2)"
+    lon="$(echo "$item" | cut -d'|' -f3)"
+
+    server_id="$(find_server_id_by_geo "$lat" "$lon" || true)"
+
+    if [[ -z "$server_id" ]]; then
+      echo "  WARNING: no server found for $label lat=$lat lon=$lon; skipping"
+      continue
+    fi
+
+    echo "  $label lat=$lat lon=$lon -> server_id=$server_id"
+    ALL_SERVERS+=("${label}|${server_id}")
+  done
+fi
+
+if [[ "${#ALL_SERVERS[@]}" -eq 0 ]]; then
+  echo "ERROR: no speedtest servers selected" >&2
+  exit 1
+fi
 
 echo
 echo "Running speedtests..."
@@ -153,7 +206,7 @@ for item in "${ALL_SERVERS[@]}"; do
 
   for run in $(seq 1 "$RUNS"); do
     run_speedtest "$label" "$server_id" "$run"
-    sleep "${SLEEP_BETWEEN_TESTS:-90}"
+    sleep "$SLEEP_BETWEEN_TESTS"
   done
 done
 

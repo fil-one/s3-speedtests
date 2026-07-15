@@ -82,7 +82,7 @@ The same behavior can be enabled with `TRANSFER_PROGRESS=1`:
 TRANSFER_PROGRESS=1 ./scripts/run_all --providers aws,wasabi
 ```
 
-By default, `run_all` uses minimal waits: `PAUSE_SECONDS=5`, `NETWORK_RUNS=1`, and `NETWORK_SLEEP_SECONDS=5`. Override them when you want more samples:
+By default, `run_all` uses minimal waits: `PAUSE_SECONDS=5`, `NETWORK_RUNS=1`, `NETWORK_SLEEP_SECONDS=5`, and `NETWORK_SERVER_MODE=auto`. Override them when you want more samples:
 
 ```bash
 NETWORK_RUNS=3 NETWORK_SLEEP_SECONDS=30 PAUSE_SECONDS=10 ./scripts/run_all
@@ -112,6 +112,19 @@ Network baseline:
 ```bash
 RUNS=1 ./scripts/network_speedtest_ookla.sh
 ```
+
+By default, the network baseline uses Ookla automatic server selection, so it should pick a nearby/best server for the current VM location. This avoids the old Spain/Paris fixed-server behavior when the VM is in another region such as New York.
+
+Network server modes:
+
+```bash
+NETWORK_SERVER_MODE=auto RUNS=1 ./scripts/network_speedtest_ookla.sh
+NETWORK_SERVER_MODE=fixed RUNS=1 ./scripts/network_speedtest_ookla.sh
+NETWORK_SERVER_MODE=geo RUNS=1 ./scripts/network_speedtest_ookla.sh
+NETWORK_SERVER_MODE=all RUNS=1 ./scripts/network_speedtest_ookla.sh
+```
+
+`auto` uses Ookla's selected server and does not call the Speedtest server-list API. `fixed` uses the legacy Barcelona, Madrid, and Paris server IDs. `geo` searches the Speedtest server-list API for the configured city coordinates and may be rate-limited by Ookla. `all` combines auto, fixed, and geo.
 
 Provider traceroutes:
 

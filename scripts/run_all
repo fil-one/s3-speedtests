@@ -9,6 +9,7 @@ DOWNLOADS_DIR="${DOWNLOADS_DIR:-/downloads}"
 PAUSE_SECONDS="${PAUSE_SECONDS:-5}"
 NETWORK_RUNS="${NETWORK_RUNS:-1}"
 NETWORK_SLEEP_SECONDS="${NETWORK_SLEEP_SECONDS:-5}"
+NETWORK_SERVER_MODE="${NETWORK_SERVER_MODE:-auto}"
 UPLOAD_RUNS="${UPLOAD_RUNS:-1}"
 DOWNLOAD_RUNS="${DOWNLOAD_RUNS:-1}"
 TRANSFER_PROGRESS="${TRANSFER_PROGRESS:-0}"
@@ -36,6 +37,7 @@ Environment overrides:
   PAUSE_SECONDS=5
   NETWORK_RUNS=1
   NETWORK_SLEEP_SECONDS=5
+  NETWORK_SERVER_MODE=auto
   UPLOAD_RUNS=1
   DOWNLOAD_RUNS=1
   TRANSFER_PROGRESS=0
@@ -131,7 +133,7 @@ fi
 
 run_step "s3_write_profiles" "$SCRIPT_DIR/s3_write_profiles.py" "${PROFILE_ARGS[@]}"
 run_step "s3_access_check" "$SCRIPT_DIR/s3_access_check.py" "${ACCESS_ARGS[@]}"
-run_step "network_speedtest_ookla" env RUNS="$NETWORK_RUNS" SLEEP_BETWEEN_TESTS="$NETWORK_SLEEP_SECONDS" OUTPUT_DIR="$OUTPUT_DIR" "$SCRIPT_DIR/network_speedtest_ookla.sh"
+run_step "network_speedtest_ookla" env RUNS="$NETWORK_RUNS" SLEEP_BETWEEN_TESTS="$NETWORK_SLEEP_SECONDS" NETWORK_SERVER_MODE="$NETWORK_SERVER_MODE" OUTPUT_DIR="$OUTPUT_DIR" "$SCRIPT_DIR/network_speedtest_ookla.sh"
 run_step "s3_provider_traceroutes" env OUTPUT_DIR="$OUTPUT_DIR" TARGETS_FILE="$TARGETS_FILE" "$SCRIPT_DIR/s3_provider_traceroutes.sh"
 run_step "s3_upload_standard" "$SCRIPT_DIR/s3_upload_speedtest.sh" "${UPLOAD_COMMON[@]}" --file-set standard
 run_step "s3_upload_large" "$SCRIPT_DIR/s3_upload_speedtest.sh" "${UPLOAD_COMMON[@]}" --file-set large
