@@ -4,7 +4,7 @@ set -uo pipefail
 OUTPUT_DIR="${OUTPUT_DIR:-/dataoutput}"
 RUNS="${RUNS:-1}"
 SPEEDTEST_TIMEOUT="${SPEEDTEST_TIMEOUT:-240}"
-NETWORK_SERVER_MODE="${NETWORK_SERVER_MODE:-auto}"
+NETWORK_SERVER_MODE="${NETWORK_SERVER_MODE:-world}"
 SLEEP_BETWEEN_TESTS="${SLEEP_BETWEEN_TESTS:-5}"
 
 RUNS_FILE="${OUTPUT_DIR}/network_speedtest_ookla_runs.jsonl"
@@ -28,6 +28,32 @@ FIXED_SERVERS=(
   "barcelona_spain_jazztel|63419"
   "madrid_spain_melbicom|37061"
   "paris_france_scaleway|61933"
+)
+
+WORLD_SERVERS=(
+  "new_york_usa|72800"
+  "ashburn_usa|1774"
+  "los_angeles_usa|16676"
+  "london_uk|24385"
+  "paris_france|61933"
+  "frankfurt_germany|3907"
+  "amsterdam_netherlands|52365"
+  "singapore|4235"
+  "tokyo_japan|7139"
+  "sydney_australia|1267"
+)
+
+WORLD_SERVERS=(
+  "new_york_usa|72800"
+  "ashburn_usa|1774"
+  "los_angeles_usa|16676"
+  "london_uk|24385"
+  "paris_france|61933"
+  "frankfurt_germany|3907"
+  "amsterdam_netherlands|52365"
+  "singapore|4235"
+  "tokyo_japan|7139"
+  "sydney_australia|1267"
 )
 
 # Format: label|lat|lon
@@ -136,6 +162,28 @@ case "$NETWORK_SERVER_MODE" in
     echo "  auto_nearest -> Ookla-selected nearest/best server"
     ALL_SERVERS+=("auto_nearest|")
     ;;
+  world)
+    echo "World baseline servers:"
+    echo "  auto_nearest -> Ookla-selected nearest/best server"
+    ALL_SERVERS+=("auto_nearest|")
+    for item in "${WORLD_SERVERS[@]}"; do
+      label="${item%%|*}"
+      server_id="${item##*|}"
+      echo "  $label -> $server_id"
+      ALL_SERVERS+=("${label}|${server_id}")
+    done
+    ;;
+  world)
+    echo "World baseline servers:"
+    echo "  auto_nearest -> Ookla-selected nearest/best server"
+    ALL_SERVERS+=("auto_nearest|")
+    for item in "${WORLD_SERVERS[@]}"; do
+      label="${item%%|*}"
+      server_id="${item##*|}"
+      echo "  $label -> $server_id"
+      ALL_SERVERS+=("${label}|${server_id}")
+    done
+    ;;
   fixed|legacy_fixed)
     echo "Fixed servers:"
     for item in "${FIXED_SERVERS[@]}"; do
@@ -161,7 +209,7 @@ case "$NETWORK_SERVER_MODE" in
     done
     ;;
   *)
-    echo "ERROR: NETWORK_SERVER_MODE must be auto, fixed, legacy_fixed, geo, or all" >&2
+    echo "ERROR: NETWORK_SERVER_MODE must be auto, world, fixed, legacy_fixed, geo, or all" >&2
     exit 2
     ;;
 esac
