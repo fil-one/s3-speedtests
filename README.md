@@ -107,6 +107,25 @@ Check bucket access:
 ./scripts/s3_access_check.py
 ```
 
+Check one provider by target section, provider name, or AWS profile:
+
+```bash
+./scripts/s3_access_check.py --providers f1
+./scripts/s3_access_check.py --providers aws-us-west-2
+```
+
+Print each AWS CLI command plus stdout/stderr for debugging:
+
+```bash
+./scripts/s3_access_check.py --providers f1 --verbose
+```
+
+Pass AWS CLI `--debug` for deep troubleshooting. This is very noisy and can include request metadata, so redirect it to a log when needed:
+
+```bash
+./scripts/s3_access_check.py --providers f1 --debug-aws 2>&1 | tee /dataoutput/f1_access_debug.log
+```
+
 Network baseline:
 
 ```bash

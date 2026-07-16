@@ -31,7 +31,14 @@ def tail_text(value: str, limit: int = 2000) -> str:
 
 
 def bool_value(value: str) -> bool:
-    return value.strip().lower() in {"1", "yes", "true", "on"}
+    return value.strip().lower() in {"1", "yes", "true", "on", "enabled", "enable"}
+
+
+def provider_filter(*values: str) -> set[str] | None:
+    selected = set()
+    for value in values:
+        selected.update(x.strip() for x in value.split(",") if x.strip())
+    return selected or None
 
 
 def safe_name(value: str) -> str:
@@ -54,13 +61,14 @@ def get_targets(path: Path, only: set[str] | None = None) -> list[dict[str, str]
     cfg.read(path)
     targets = []
     for section in cfg.sections():
-        if only and section not in only:
-            continue
-        if not bool_value(cfg.get(section, "enabled", fallback="false")):
-            continue
         target = {k: cfg.get(section, k, fallback="").strip() for k in cfg[section]}
         target["section"] = section
         target["provider"] = target.get("provider") or section
+        names = {section, target["provider"], target.get("profile", "")}
+        if only and not (names & only):
+            continue
+        if not bool_value(target.get("enabled", "false")):
+            continue
         bucket = target.get("bucket", "")
         if not bucket or bucket.startswith("REPLACE_"):
             print(f"skip {section}: bucket missing/placeholder", file=sys.stderr)
@@ -101,8 +109,10 @@ def env_for(target: dict[str, str]) -> dict[str, str]:
     return env
 
 
-def aws_base(aws_path: str, target: dict[str, str]) -> list[str]:
+def aws_base(aws_path: str, target: dict[str, str], debug_aws: bool = False) -> list[str]:
     cmd = [aws_path]
+    if debug_aws:
+        cmd.append("--debug")
     if target.get("profile"):
         cmd.extend(["--profile", target["profile"]])
     if target.get("endpoint_url"):
@@ -112,8 +122,10 @@ def aws_base(aws_path: str, target: dict[str, str]) -> list[str]:
     return cmd
 
 
-def run_step(base: dict, target: dict[str, str], operation: str, cmd: list[str], env: dict[str, str], out_paths: dict[str, Path]) -> dict:
+def run_step(base: dict, target: dict[str, str], operation: str, cmd: list[str], env: dict[str, str], out_paths: dict[str, Path], verbose: bool = False) -> dict:
     started = utc_now()
+    if verbose:
+        print("$ " + " ".join(shlex.quote(part) for part in cmd))
     t0 = time.monotonic()
     proc = subprocess.run(cmd, text=True, capture_output=True, env=env)
     elapsed = time.monotonic() - t0
@@ -140,22 +152,28 @@ def run_step(base: dict, target: dict[str, str], operation: str, cmd: list[str],
     write_jsonl(out_paths["run"], record)
     write_jsonl(out_paths["aggregate"], record)
     print(f"{target['provider']} {operation}: {'ok' if record['success'] else 'FAIL'} ({record['elapsed_seconds']}s)")
-    if not record["success"] and record["stderr_tail"]:
+    if verbose:
+        if proc.stdout:
+            print(proc.stdout, end="" if proc.stdout.endswith("\n") else "\n")
+        if proc.stderr:
+            print(proc.stderr, end="" if proc.stderr.endswith("\n") else "\n", file=sys.stderr)
+    elif not record["success"] and record["stderr_tail"]:
         print("  ", record["stderr_tail"].strip().splitlines()[-1])
     return record
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check S3-compatible provider bucket access and write JSONL output.")
-    parser.add_argument("provider_names", nargs="?", default="", help="Optional comma-separated provider sections to test")
+    parser.add_argument("provider_names", nargs="?", default="", help="Optional comma-separated provider sections to test; kept for compatibility")
+    parser.add_argument("--providers", default="", help="Comma-separated provider sections/provider names/profiles to test")
     parser.add_argument("--targets", default=str(DEFAULT_TARGETS), help="INI file with bucket/provider targets")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR), help="Directory for JSONL output")
     parser.add_argument("--aws-path", default=DEFAULT_AWS_PATH, help="Path to aws CLI")
+    parser.add_argument("--verbose", action="store_true", help="Print each AWS CLI command plus stdout/stderr")
+    parser.add_argument("--debug-aws", action="store_true", help="Pass --debug to AWS CLI commands; very noisy")
     args = parser.parse_args()
 
-    only = None
-    if args.provider_names:
-        only = {x.strip() for x in args.provider_names.split(",") if x.strip()}
+    only = provider_filter(args.provider_names, args.providers)
     targets_path = Path(args.targets)
     output_dir = Path(args.output_dir)
     targets = get_targets(targets_path, only)
@@ -190,14 +208,14 @@ def main() -> int:
         env = env_for(target)
         prefix = (target.get("prefix") or f"codex-s3-test/{safe_name(target['provider'])}").strip("/")
         key = f"{prefix}/access-check/{run_id}-{safe_name(target['provider'])}.txt"
-        base_cmd = aws_base(args.aws_path, target)
+        base_cmd = aws_base(args.aws_path, target, debug_aws=args.debug_aws)
         steps = [
             ("head_bucket", base_cmd + ["s3api", "head-bucket", "--bucket", target["bucket"]]),
             ("put_object", base_cmd + ["s3api", "put-object", "--bucket", target["bucket"], "--key", key, "--body", str(probe)]),
             ("head_object", base_cmd + ["s3api", "head-object", "--bucket", target["bucket"], "--key", key]),
             ("delete_object", base_cmd + ["s3api", "delete-object", "--bucket", target["bucket"], "--key", key]),
         ]
-        records = [run_step(base, target, op, cmd, env, out_paths) for op, cmd in steps]
+        records = [run_step(base, target, op, cmd, env, out_paths, verbose=args.verbose or args.debug_aws) for op, cmd in steps]
         all_records.extend(records)
         summary = dict(base)
         summary.update({
