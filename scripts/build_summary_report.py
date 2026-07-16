@@ -45,6 +45,8 @@ PROVIDER_NAMES = {
     "backblaze": "Backblaze",
 }
 
+FILONE_BRAND_FILL = "069AF3"
+
 
 def import_docx() -> None:
     global Document
@@ -360,6 +362,13 @@ def compact_provider(provider: str) -> str:
     return PROVIDER_NAMES.get(key, PROVIDERS.get(key, (provider, "", ""))[0])
 
 
+def is_filone_row(row: dict[str, Any], provider_labels: dict[str, dict[str, Any]]) -> bool:
+    provider = provider_key(str(row.get("provider", "")))
+    if provider in {"f1", "fil.one", "filone"}:
+        return True
+    return str(label_from_row(row, provider_labels).get("name") or "").strip().lower() == "fil.one"
+
+
 def summary_total_elapsed(record: dict[str, Any]) -> float | None:
     value = record.get("total_elapsed_seconds")
     if value is not None:
@@ -439,13 +448,55 @@ def latest_run_records(records: list[dict[str, Any]], record_type: str, file_set
     return [record for record in candidates if str(record.get("run_id", "")) == latest_run_id]
 
 
+def ranking_total_elapsed(row: dict[str, Any]) -> float:
+    value = row.get("total_elapsed_seconds")
+    if value is None or value == "":
+        return float("inf")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float("inf")
+
+
 def ranked_by_size(rows: list[dict[str, Any]]) -> list[tuple[float, list[dict[str, Any]]]]:
     grouped = []
     for size in sorted({row["size_mib"] for row in rows}):
         members = [row for row in rows if row["size_mib"] == size]
-        members.sort(key=lambda row: (-(row["median_mbps"] or 0), compact_provider(row["provider"])))
+        members.sort(key=lambda row: (
+            ranking_total_elapsed(row),
+            -(row.get("median_mbps") or 0),
+            compact_provider(row["provider"]),
+        ))
         grouped.append((size, members))
     return grouped
+
+
+def file_size_count(members: list[dict[str, Any]]) -> int | None:
+    counts = []
+    for row in members:
+        value = row.get("attempts")
+        if value is None:
+            value = row.get("successes")
+        if value is None:
+            continue
+        try:
+            counts.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    return max(counts) if counts else None
+
+
+def file_size_label(size: float, members: list[dict[str, Any]]) -> str:
+    count = file_size_count(members)
+    return f"{fmt_size(size)} * {count}" if count else fmt_size(size)
+
+
+def file_size_summary_labels(report_data: dict[str, Any]) -> list[str]:
+    rows = report_data["upload_standard"] + report_data["upload_large"] + report_data["download"]
+    labels = []
+    for size in sorted({row["size_mib"] for row in rows}):
+        labels.append(file_size_label(size, [row for row in rows if row["size_mib"] == size]))
+    return labels
 
 
 def set_cell_text(cell, text: str, bold_first_line: bool = False, font_size: float = 9.0) -> None:
@@ -548,17 +599,19 @@ def add_ranked_table(doc: Document, title: str, rows: list[tuple[float, list[dic
         add_body(doc, "No matching summary records were found for this section.")
         return
     table = doc.add_table(rows=1, cols=5)
-    for idx, header in enumerate(["File size", "Fastest", "2nd", "3rd", "4th"]):
+    for idx, header in enumerate(["File size / count", "Fastest", "2nd", "3rd", "4th"]):
         set_cell_text(table.rows[0].cells[idx], header, bold_first_line=True, font_size=8.5)
     for size, members in rows:
         cells = table.add_row().cells
-        set_cell_text(cells[0], fmt_size(size), bold_first_line=True, font_size=8.5)
+        set_cell_text(cells[0], file_size_label(size, members), bold_first_line=True, font_size=8.5)
         for idx in range(4):
             text = "n/a"
             if idx < len(members):
                 m = members[idx]
                 text = transfer_cell_text(m, provider_labels)
             set_cell_text(cells[idx + 1], text, bold_first_line=True, font_size=7.2)
+            if idx < len(members) and is_filone_row(members[idx], provider_labels):
+                shade_cell(cells[idx + 1], FILONE_BRAND_FILL)
     style_table(table, [0.75, 1.43, 1.43, 1.43, 1.43])
 
 
@@ -738,12 +791,13 @@ def create_doc(args: argparse.Namespace) -> Path:
     title_run.font.size = Pt(26)
     title_run.font.bold = False
 
-    add_body(doc, f"Prepared from JSONL benchmark output in {data_dir}. Rankings in the transfer tables are ordered fastest to slowest from left to right using median throughput.")
+    add_body(doc, f"Prepared from JSONL benchmark output in {data_dir}. Rankings in the transfer tables are ordered fastest to slowest from left to right using total elapsed time.")
     add_heading(doc, "Test Node", 2)
     add_specs_table(doc, args)
     add_network_table(doc, report_data["network_records"])
     add_heading(doc, "File Size Tests", 2)
-    add_body(doc, "The benchmark file sizes represented in the loaded results are: " + ", ".join(fmt_size(size) for size in report_data["sizes"]) + ".")
+    size_labels = ", ".join(file_size_summary_labels(report_data)) or "none"
+    add_body(doc, "The benchmark file sizes represented in the loaded results are: " + size_labels + ".")
 
     doc.add_section(WD_SECTION.NEW_PAGE)
     add_ranked_table(doc, "Upload Results: Small / Standard File Set", ranked_by_size(report_data["upload_standard"]), provider_labels)
@@ -788,13 +842,13 @@ def pdf_paragraph(text: Any, style: Any) -> Any:
     return Paragraph(escaped, style)
 
 
-def pdf_table(rows: list[list[Any]], widths: list[float], styles: dict[str, Any], repeat_header: bool = True) -> Any:
+def pdf_table(rows: list[list[Any]], widths: list[float], styles: dict[str, Any], repeat_header: bool = True, backgrounds: list[tuple[int, int, str]] | None = None) -> Any:
     converted = []
     for row_idx, row in enumerate(rows):
         row_style = styles["header"] if row_idx == 0 and repeat_header else styles["small"]
         converted.append([pdf_paragraph(cell, row_style) for cell in row])
     table = PdfTable(converted, colWidths=[width * inch for width in widths], repeatRows=1 if repeat_header else 0)
-    table.setStyle(TableStyle([
+    table_style = [
         ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#DADCE0")),
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F1F3F4")) if repeat_header else ("BACKGROUND", (0, 0), (-1, -1), colors.white),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
@@ -802,7 +856,10 @@ def pdf_table(rows: list[list[Any]], widths: list[float], styles: dict[str, Any]
         ("RIGHTPADDING", (0, 0), (-1, -1), 4),
         ("TOPPADDING", (0, 0), (-1, -1), 3),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-    ]))
+    ]
+    for row_idx, col_idx, fill in backgrounds or []:
+        table_style.append(("BACKGROUND", (col_idx, row_idx), (col_idx, row_idx), colors.HexColor(f"#{fill}")))
+    table.setStyle(TableStyle(table_style))
     return table
 
 
@@ -832,17 +889,21 @@ def pdf_add_ranked_table(story: list[Any], title: str, rows: list[tuple[float, l
     if not rows:
         pdf_add_body(story, "No matching summary records were found for this section.", styles)
         return
-    table_rows = [["File size", "Fastest", "2nd", "3rd", "4th"]]
+    table_rows = [["File size / count", "Fastest", "2nd", "3rd", "4th"]]
+    backgrounds = []
     for size, members in rows:
-        row = [fmt_size(size)]
+        row = [file_size_label(size, members)]
+        table_row_idx = len(table_rows)
         for idx in range(4):
             text = "n/a"
             if idx < len(members):
                 member = members[idx]
                 text = transfer_cell_text(member, provider_labels)
+                if is_filone_row(member, provider_labels):
+                    backgrounds.append((table_row_idx, idx + 1, FILONE_BRAND_FILL))
             row.append(text)
         table_rows.append(row)
-    story.append(pdf_table(table_rows, [0.9, 2.1, 2.1, 2.1, 2.1], styles))
+    story.append(pdf_table(table_rows, [1.05, 2.05, 2.05, 2.05, 2.05], styles, backgrounds=backgrounds))
 
 
 def pdf_add_network_table(story: list[Any], records: list[dict[str, Any]], styles: dict[str, Any]) -> None:
@@ -921,12 +982,12 @@ def create_pdf(args: argparse.Namespace) -> Path:
     story: list[Any] = []
 
     story.append(Paragraph("S3 Provider Transfer Benchmark Summary", styles["title"]))
-    pdf_add_body(story, f"Prepared from JSONL benchmark output in {data_dir}. Rankings in the transfer tables are ordered fastest to slowest from left to right using median throughput.", styles)
+    pdf_add_body(story, f"Prepared from JSONL benchmark output in {data_dir}. Rankings in the transfer tables are ordered fastest to slowest from left to right using total elapsed time.", styles)
     pdf_add_heading(story, "Test Node", styles)
     pdf_add_specs_table(story, args, styles)
     pdf_add_network_table(story, report_data["network_records"], styles)
     pdf_add_heading(story, "File Size Tests", styles)
-    sizes = ", ".join(fmt_size(size) for size in report_data["sizes"]) or "none"
+    sizes = ", ".join(file_size_summary_labels(report_data)) or "none"
     pdf_add_body(story, "The benchmark file sizes represented in the loaded results are: " + sizes + ".", styles)
 
     story.append(PageBreak())
