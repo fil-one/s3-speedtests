@@ -96,6 +96,7 @@ def env_for(target: dict[str, str]) -> dict[str, str]:
     env["AWS_EC2_METADATA_DISABLED"] = "true"
     env["AWS_REQUEST_CHECKSUM_CALCULATION"] = target.get("request_checksum_calculation") or "when_required"
     env["AWS_RESPONSE_CHECKSUM_VALIDATION"] = target.get("response_checksum_validation") or "when_required"
+    env.setdefault("AWS_MAX_ATTEMPTS", target.get("aws_max_attempts") or "6")
     region = target.get("region") or "us-east-1"
     env["AWS_DEFAULT_REGION"] = region
     env["AWS_REGION"] = region

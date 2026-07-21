@@ -52,6 +52,8 @@ Edit `/testfiles/s3_targets.ini`, enable the providers you want, and add bucket 
 
 For AWS SSO or temporary AWS credentials, configure the profile directly with AWS CLI and set `profile = aws` and `auth_mode = profile`.
 
+S3 commands default to `AWS_MAX_ATTEMPTS=6`, which means one initial request plus five retries. Override globally with `AWS_MAX_ATTEMPTS=...` or per provider with `aws_max_attempts = ...` in `/testfiles/s3_targets.ini`.
+
 ## Common Runs
 
 ### Run Everything
