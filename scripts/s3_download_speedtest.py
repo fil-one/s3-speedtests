@@ -126,7 +126,7 @@ def build_env(target: dict[str, str]) -> dict[str, str]:
     env["AWS_REGION"] = region
     env["AWS_REQUEST_CHECKSUM_CALCULATION"] = target.get("request_checksum_calculation") or "when_required"
     env["AWS_RESPONSE_CHECKSUM_VALIDATION"] = target.get("response_checksum_validation") or "when_required"
-    env.setdefault("AWS_MAX_ATTEMPTS", target.get("aws_max_attempts") or "6")
+    env.setdefault("AWS_MAX_ATTEMPTS", target.get("aws_max_attempts") or "11")
     if use_inline_credentials(target):
         if target.get("access_key_id") and not target["access_key_id"].startswith("REPLACE_"):
             env["AWS_ACCESS_KEY_ID"] = target["access_key_id"]

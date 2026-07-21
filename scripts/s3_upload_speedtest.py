@@ -173,7 +173,7 @@ def build_env(target: dict[str, str]) -> dict[str, str]:
     response_checksum = target.get("response_checksum_validation") or "when_required"
     env["AWS_REQUEST_CHECKSUM_CALCULATION"] = request_checksum
     env["AWS_RESPONSE_CHECKSUM_VALIDATION"] = response_checksum
-    env.setdefault("AWS_MAX_ATTEMPTS", target.get("aws_max_attempts") or "6")
+    env.setdefault("AWS_MAX_ATTEMPTS", target.get("aws_max_attempts") or "11")
 
     if use_inline_credentials(target):
         if target.get("access_key_id") and not target["access_key_id"].startswith("REPLACE_"):
