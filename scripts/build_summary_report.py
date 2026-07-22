@@ -45,7 +45,7 @@ PROVIDER_NAMES = {
     "backblaze": "Backblaze",
 }
 
-FILONE_BRAND_FILL = "069AF3"
+FILONE_BRAND_FILL = "C9DAF8"
 
 
 def import_docx() -> None:
@@ -388,7 +388,7 @@ def transfer_cell_text(row: dict[str, Any], provider_labels: dict[str, dict[str,
         provider_label(row, provider_labels),
         f"Median {fmt_mbps(row['median_mbps'])}",
         f"Avg {fmt_mbps(row['avg_mbps'])}",
-        f"Total time {fmt_seconds(row.get('total_elapsed_seconds'))}",
+        f"Total Time: {fmt_seconds(row.get('total_elapsed_seconds'))}",
     ]
     if row.get("median_elapsed_seconds") is not None:
         lines.append(f"Median time {fmt_seconds(row.get('median_elapsed_seconds'))}")
@@ -499,6 +499,58 @@ def file_size_summary_labels(report_data: dict[str, Any]) -> list[str]:
     return labels
 
 
+def pct_delta(current: float, reference: float) -> float | None:
+    if reference <= 0 or current == float("inf") or reference == float("inf"):
+        return None
+    return ((current - reference) / reference) * 100
+
+
+def fmt_pct(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{abs(value):.1f}%"
+
+
+def filone_section_takeaway(title: str, rows: list[tuple[float, list[dict[str, Any]]]], provider_labels: dict[str, dict[str, Any]]) -> str:
+    details = []
+    for size, members in rows:
+        if not members:
+            continue
+        filone_index = next((idx for idx, row in enumerate(members) if is_filone_row(row, provider_labels)), None)
+        if filone_index is None:
+            continue
+        filone = members[filone_index]
+        filone_time = ranking_total_elapsed(filone)
+        rank = filone_index + 1
+        if rank == 1:
+            comparison = "ranked #1"
+            if len(members) > 1:
+                second_time = ranking_total_elapsed(members[1])
+                delta = pct_delta(filone_time, second_time)
+                comparison = f"ranked #1, {fmt_pct(delta)} faster than #2" if delta is not None else "ranked #1"
+        else:
+            fastest_time = ranking_total_elapsed(members[0])
+            delta = pct_delta(filone_time, fastest_time)
+            comparison = f"ranked #{rank}, {fmt_pct(delta)} slower than #1" if delta is not None else f"ranked #{rank}"
+        details.append(f"{fmt_size(size)} {comparison}")
+    if not details:
+        return f"{title}: Fil.one was not present in the loaded results."
+    return f"{title}: Fil.one " + "; ".join(details) + "."
+
+
+def filone_takeaways(report_data: dict[str, Any], provider_labels: dict[str, dict[str, Any]]) -> list[str]:
+    sections = [
+        ("Upload standard", ranked_by_size(report_data["upload_standard"])),
+        ("Upload large", ranked_by_size(report_data["upload_large"])),
+        ("Download", ranked_by_size(report_data["download"])),
+    ]
+    takeaways = [filone_section_takeaway(title, rows, provider_labels) for title, rows in sections]
+    takeaways.append("Rankings are based on total elapsed time for each file-size group; lower total time is better.")
+    takeaways.append("The Ookla baseline helps separate provider and route behavior from raw VM network capacity.")
+    takeaways.append("All source data remains in JSONL so it can be re-used for later analysis or report generation.")
+    return takeaways
+
+
 def set_cell_text(cell, text: str, bold_first_line: bool = False, font_size: float = 9.0) -> None:
     cell.text = ""
     lines = text.split("\n")
@@ -510,7 +562,7 @@ def set_cell_text(cell, text: str, bold_first_line: bool = False, font_size: flo
         run = p.add_run(line)
         run.font.name = "Arial"
         run.font.size = Pt(font_size)
-        run.bold = bold_first_line and idx == 0
+        run.bold = (bold_first_line and idx == 0) or line.startswith("Total Time:")
 
 
 def shade_cell(cell, fill: str) -> None:
@@ -808,12 +860,7 @@ def create_doc(args: argparse.Namespace) -> Path:
     add_traceroute_table(doc, report_data["traceroute_records"], enabled_traceroute_endpoints(provider_labels))
 
     add_heading(doc, "Key Takeaways", 2)
-    takeaways = [
-        "Use the ranked tables to compare provider behavior at each object size; large-object results are most representative of sustained transfer performance.",
-        "The Ookla baseline helps separate provider and route behavior from raw VM network capacity.",
-        "All source data remains in JSONL so it can be re-used for later analysis or report generation.",
-    ]
-    for text in takeaways:
+    for text in filone_takeaways(report_data, provider_labels):
         p = doc.add_paragraph(style="List Bullet")
         p.paragraph_format.space_after = Pt(4)
         run = p.add_run(text)
@@ -838,8 +885,13 @@ def pdf_styles() -> dict[str, Any]:
 
 
 def pdf_paragraph(text: Any, style: Any) -> Any:
-    escaped = html.escape(str(text)).replace("\n", "<br/>")
-    return Paragraph(escaped, style)
+    escaped_lines = []
+    for line in str(text).split("\n"):
+        escaped = html.escape(line)
+        if line.startswith("Total Time:"):
+            escaped = f"<b>{escaped}</b>"
+        escaped_lines.append(escaped)
+    return Paragraph("<br/>".join(escaped_lines), style)
 
 
 def pdf_table(rows: list[list[Any]], widths: list[float], styles: dict[str, Any], repeat_header: bool = True, backgrounds: list[tuple[int, int, str]] | None = None) -> Any:
@@ -999,11 +1051,7 @@ def create_pdf(args: argparse.Namespace) -> Path:
     pdf_add_traceroutes(story, report_data["traceroute_records"], styles, enabled_traceroute_endpoints(provider_labels))
 
     pdf_add_heading(story, "Key Takeaways", styles)
-    for text in [
-        "Use the ranked tables to compare provider behavior at each object size; large-object results are most representative of sustained transfer performance.",
-        "The Ookla baseline helps separate provider and route behavior from raw VM network capacity.",
-        "All source data remains in JSONL so it can be re-used for later analysis or report generation.",
-    ]:
+    for text in filone_takeaways(report_data, provider_labels):
         story.append(Paragraph("&bull; " + html.escape(text), styles["body"]))
 
     doc.build(story)
