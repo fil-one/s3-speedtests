@@ -46,6 +46,17 @@ PROVIDER_NAMES = {
 }
 
 FILONE_BRAND_FILL = "C9DAF8"
+BAR_SEGMENTS = 16
+PROVIDER_BAR_FILLS = {
+    "aws": "FF9900",
+    "aws-test": "FF9900",
+    "backblaze": "E21E29",
+    "f1": FILONE_BRAND_FILL,
+    "fil.one": FILONE_BRAND_FILL,
+    "filone": FILONE_BRAND_FILL,
+    "wasabi": "17D24F",
+}
+DEFAULT_BAR_FILL = "DADCE0"
 
 
 def import_docx() -> None:
@@ -357,6 +368,17 @@ def provider_label(row: dict[str, Any], provider_labels: dict[str, dict[str, Any
     return str(label["name"])
 
 
+def provider_chart_label(row: dict[str, Any], provider_labels: dict[str, dict[str, Any]]) -> str:
+    return provider_label(row, provider_labels).replace("\n", " ")
+
+
+def provider_bar_fill(row: dict[str, Any], provider_labels: dict[str, dict[str, Any]]) -> str:
+    provider = provider_key(str(row.get("provider", "")))
+    if is_filone_row(row, provider_labels):
+        return FILONE_BRAND_FILL
+    return PROVIDER_BAR_FILLS.get(provider, DEFAULT_BAR_FILL)
+
+
 def compact_provider(provider: str) -> str:
     key = provider_key(provider)
     return PROVIDER_NAMES.get(key, PROVIDERS.get(key, (provider, "", ""))[0])
@@ -499,6 +521,25 @@ def file_size_summary_labels(report_data: dict[str, Any]) -> list[str]:
     return labels
 
 
+def total_time_chart_rows(rows: list[tuple[float, list[dict[str, Any]]]], provider_labels: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    totals: dict[str, dict[str, Any]] = {}
+    for _size, members in rows:
+        for row in members:
+            total = ranking_total_elapsed(row)
+            if total == float("inf"):
+                continue
+            key = provider_key(str(row.get("provider", ""))) or provider_chart_label(row, provider_labels)
+            if key not in totals:
+                totals[key] = {
+                    "provider": row.get("provider", ""),
+                    "label": provider_chart_label(row, provider_labels),
+                    "fill": provider_bar_fill(row, provider_labels),
+                    "total_seconds": 0.0,
+                }
+            totals[key]["total_seconds"] += total
+    return sorted(totals.values(), key=lambda row: (row["total_seconds"], row["label"]))
+
+
 def pct_delta(current: float, reference: float) -> float | None:
     if reference <= 0 or current == float("inf") or reference == float("inf"):
         return None
@@ -511,7 +552,7 @@ def fmt_pct(value: float | None) -> str:
     return f"{abs(value):.1f}%"
 
 
-def filone_section_takeaway(title: str, rows: list[tuple[float, list[dict[str, Any]]]], provider_labels: dict[str, dict[str, Any]]) -> str:
+def filone_section_takeaway(title: str, rows: list[tuple[float, list[dict[str, Any]]]], provider_labels: dict[str, dict[str, Any]]) -> tuple[str, list[str]]:
     details = []
     for size, members in rows:
         if not members:
@@ -532,22 +573,27 @@ def filone_section_takeaway(title: str, rows: list[tuple[float, list[dict[str, A
             fastest_time = ranking_total_elapsed(members[0])
             delta = pct_delta(filone_time, fastest_time)
             comparison = f"ranked #{rank}, {fmt_pct(delta)} slower than #1" if delta is not None else f"ranked #{rank}"
-        details.append(f"{fmt_size(size)} {comparison}")
+        details.append(f"{fmt_size(size)}: Fil.one {comparison}.")
     if not details:
-        return f"{title}: Fil.one was not present in the loaded results."
-    return f"{title}: Fil.one " + "; ".join(details) + "."
+        return title, ["Fil.one was not present in the loaded results."]
+    return title, details
 
 
-def filone_takeaways(report_data: dict[str, Any], provider_labels: dict[str, dict[str, Any]]) -> list[str]:
+def filone_takeaway_sections(report_data: dict[str, Any], provider_labels: dict[str, dict[str, Any]]) -> list[tuple[str, list[str]]]:
     sections = [
         ("Upload standard", ranked_by_size(report_data["upload_standard"])),
         ("Upload large", ranked_by_size(report_data["upload_large"])),
         ("Download", ranked_by_size(report_data["download"])),
     ]
     takeaways = [filone_section_takeaway(title, rows, provider_labels) for title, rows in sections]
-    takeaways.append("Rankings are based on total elapsed time for each file-size group; lower total time is better.")
-    takeaways.append("The Ookla baseline helps separate provider and route behavior from raw VM network capacity.")
-    takeaways.append("All source data remains in JSONL so it can be re-used for later analysis or report generation.")
+    takeaways.append((
+        "Methodology notes",
+        [
+            "Rankings are based on total elapsed time for each file-size group; lower total time is better.",
+            "The Ookla baseline helps separate provider and route behavior from raw VM network capacity.",
+            "All source data remains in JSONL so it can be re-used for later analysis or report generation.",
+        ],
+    ))
     return takeaways
 
 
@@ -665,6 +711,30 @@ def add_ranked_table(doc: Document, title: str, rows: list[tuple[float, list[dic
             if idx < len(members) and is_filone_row(members[idx], provider_labels):
                 shade_cell(cells[idx + 1], FILONE_BRAND_FILL)
     style_table(table, [0.75, 1.43, 1.43, 1.43, 1.43])
+
+
+def add_total_time_bar_chart(doc: Document, title: str, rows: list[tuple[float, list[dict[str, Any]]]], provider_labels: dict[str, dict[str, Any]]) -> None:
+    chart_rows = total_time_chart_rows(rows, provider_labels)
+    if not chart_rows:
+        return
+    add_body(doc, f"{title}: Total Time Ranking")
+    max_total = max(row["total_seconds"] for row in chart_rows)
+    table = doc.add_table(rows=1, cols=3 + BAR_SEGMENTS)
+    header_cells = table.rows[0].cells
+    for idx, header in enumerate(["Rank", "Provider", "Total Time"]):
+        set_cell_text(header_cells[idx], header, bold_first_line=True, font_size=7.4)
+    for idx in range(BAR_SEGMENTS):
+        set_cell_text(header_cells[3 + idx], "", font_size=6.0)
+    for rank, row in enumerate(chart_rows, start=1):
+        cells = table.add_row().cells
+        set_cell_text(cells[0], str(rank), font_size=7.0)
+        set_cell_text(cells[1], row["label"], bold_first_line=True, font_size=6.8)
+        set_cell_text(cells[2], fmt_seconds(row["total_seconds"]), bold_first_line=True, font_size=7.0)
+        active = max(1, round((row["total_seconds"] / max_total) * BAR_SEGMENTS)) if max_total else 0
+        for idx in range(BAR_SEGMENTS):
+            set_cell_text(cells[3 + idx], "", font_size=6.0)
+            shade_cell(cells[3 + idx], row["fill"] if idx < active else "FFFFFF")
+    style_table(table, [0.35, 1.75, 0.8] + [0.14] * BAR_SEGMENTS)
 
 
 def add_network_table(doc: Document, records: list[dict[str, Any]]) -> None:
@@ -851,21 +921,36 @@ def create_doc(args: argparse.Namespace) -> Path:
     size_labels = ", ".join(file_size_summary_labels(report_data)) or "none"
     add_body(doc, "The benchmark file sizes represented in the loaded results are: " + size_labels + ".")
 
-    doc.add_section(WD_SECTION.NEW_PAGE)
-    add_ranked_table(doc, "Upload Results: Small / Standard File Set", ranked_by_size(report_data["upload_standard"]), provider_labels)
-    add_ranked_table(doc, "Upload Results: Large File Set", ranked_by_size(report_data["upload_large"]), provider_labels)
+    upload_standard_ranked = ranked_by_size(report_data["upload_standard"])
+    upload_large_ranked = ranked_by_size(report_data["upload_large"])
+    download_ranked = ranked_by_size(report_data["download"])
 
     doc.add_section(WD_SECTION.NEW_PAGE)
-    add_ranked_table(doc, "Download Results: All File Sizes", ranked_by_size(report_data["download"]), provider_labels)
+    add_ranked_table(doc, "Upload Results: Small / Standard File Set", upload_standard_ranked, provider_labels)
+    add_total_time_bar_chart(doc, "Upload Results: Small / Standard File Set", upload_standard_ranked, provider_labels)
+    add_ranked_table(doc, "Upload Results: Large File Set", upload_large_ranked, provider_labels)
+    add_total_time_bar_chart(doc, "Upload Results: Large File Set", upload_large_ranked, provider_labels)
+
+    doc.add_section(WD_SECTION.NEW_PAGE)
+    add_ranked_table(doc, "Download Results: All File Sizes", download_ranked, provider_labels)
+    add_total_time_bar_chart(doc, "Download Results: All File Sizes", download_ranked, provider_labels)
     add_traceroute_table(doc, report_data["traceroute_records"], enabled_traceroute_endpoints(provider_labels))
 
     add_heading(doc, "Key Takeaways", 2)
-    for text in filone_takeaways(report_data, provider_labels):
+    for section_title, details in filone_takeaway_sections(report_data, provider_labels):
         p = doc.add_paragraph(style="List Bullet")
-        p.paragraph_format.space_after = Pt(4)
-        run = p.add_run(text)
+        p.paragraph_format.space_after = Pt(2)
+        run = p.add_run(section_title)
         run.font.name = "Arial"
         run.font.size = Pt(11)
+        run.bold = True
+        for detail in details:
+            sub = doc.add_paragraph(style="List Bullet 2")
+            sub.paragraph_format.space_after = Pt(2)
+            sub.paragraph_format.left_indent = Inches(0.35)
+            sub_run = sub.add_run(detail)
+            sub_run.font.name = "Arial"
+            sub_run.font.size = Pt(10)
 
     doc.save(docx)
     return docx
@@ -958,6 +1043,23 @@ def pdf_add_ranked_table(story: list[Any], title: str, rows: list[tuple[float, l
     story.append(pdf_table(table_rows, [1.05, 2.05, 2.05, 2.05, 2.05], styles, backgrounds=backgrounds))
 
 
+def pdf_add_total_time_bar_chart(story: list[Any], title: str, rows: list[tuple[float, list[dict[str, Any]]]], styles: dict[str, Any], provider_labels: dict[str, dict[str, Any]]) -> None:
+    chart_rows = total_time_chart_rows(rows, provider_labels)
+    if not chart_rows:
+        return
+    story.append(Paragraph(html.escape(f"{title}: Total Time Ranking"), styles["body"]))
+    max_total = max(row["total_seconds"] for row in chart_rows)
+    table_rows = [["Rank", "Provider", "Total Time"] + [""] * BAR_SEGMENTS]
+    backgrounds = []
+    for rank, row in enumerate(chart_rows, start=1):
+        table_row_idx = len(table_rows)
+        active = max(1, round((row["total_seconds"] / max_total) * BAR_SEGMENTS)) if max_total else 0
+        table_rows.append([rank, row["label"], fmt_seconds(row["total_seconds"])] + [""] * BAR_SEGMENTS)
+        for idx in range(active):
+            backgrounds.append((table_row_idx, 3 + idx, row["fill"]))
+    story.append(pdf_table(table_rows, [0.35, 1.8, 0.75] + [0.105] * BAR_SEGMENTS, styles, backgrounds=backgrounds))
+
+
 def pdf_add_network_table(story: list[Any], records: list[dict[str, Any]], styles: dict[str, Any]) -> None:
     pdf_add_heading(story, "Node Network Baseline (Speedtest by Ookla)", styles)
     rows = [r for r in records if r.get("record_type") == "network_speedtest_summary"]
@@ -1042,17 +1144,26 @@ def create_pdf(args: argparse.Namespace) -> Path:
     sizes = ", ".join(file_size_summary_labels(report_data)) or "none"
     pdf_add_body(story, "The benchmark file sizes represented in the loaded results are: " + sizes + ".", styles)
 
-    story.append(PageBreak())
-    pdf_add_ranked_table(story, "Upload Results: Small / Standard File Set", ranked_by_size(report_data["upload_standard"]), styles, provider_labels)
-    pdf_add_ranked_table(story, "Upload Results: Large File Set", ranked_by_size(report_data["upload_large"]), styles, provider_labels)
+    upload_standard_ranked = ranked_by_size(report_data["upload_standard"])
+    upload_large_ranked = ranked_by_size(report_data["upload_large"])
+    download_ranked = ranked_by_size(report_data["download"])
 
     story.append(PageBreak())
-    pdf_add_ranked_table(story, "Download Results: All File Sizes", ranked_by_size(report_data["download"]), styles, provider_labels)
+    pdf_add_ranked_table(story, "Upload Results: Small / Standard File Set", upload_standard_ranked, styles, provider_labels)
+    pdf_add_total_time_bar_chart(story, "Upload Results: Small / Standard File Set", upload_standard_ranked, styles, provider_labels)
+    pdf_add_ranked_table(story, "Upload Results: Large File Set", upload_large_ranked, styles, provider_labels)
+    pdf_add_total_time_bar_chart(story, "Upload Results: Large File Set", upload_large_ranked, styles, provider_labels)
+
+    story.append(PageBreak())
+    pdf_add_ranked_table(story, "Download Results: All File Sizes", download_ranked, styles, provider_labels)
+    pdf_add_total_time_bar_chart(story, "Download Results: All File Sizes", download_ranked, styles, provider_labels)
     pdf_add_traceroutes(story, report_data["traceroute_records"], styles, enabled_traceroute_endpoints(provider_labels))
 
     pdf_add_heading(story, "Key Takeaways", styles)
-    for text in filone_takeaways(report_data, provider_labels):
-        story.append(Paragraph("&bull; " + html.escape(text), styles["body"]))
+    for section_title, details in filone_takeaway_sections(report_data, provider_labels):
+        story.append(Paragraph("&bull; <b>" + html.escape(section_title) + "</b>", styles["body"]))
+        for detail in details:
+            story.append(Paragraph("&nbsp;&nbsp;&nbsp;&nbsp;&bull; " + html.escape(detail), styles["body"]))
 
     doc.build(story)
     return pdf
