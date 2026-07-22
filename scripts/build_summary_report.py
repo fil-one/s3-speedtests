@@ -928,14 +928,19 @@ def create_doc(args: argparse.Namespace) -> Path:
     doc.add_section(WD_SECTION.NEW_PAGE)
     add_ranked_table(doc, "Upload Results: Small / Standard File Set", upload_standard_ranked, provider_labels)
     add_total_time_bar_chart(doc, "Upload Results: Small / Standard File Set", upload_standard_ranked, provider_labels)
+
+    doc.add_section(WD_SECTION.NEW_PAGE)
     add_ranked_table(doc, "Upload Results: Large File Set", upload_large_ranked, provider_labels)
     add_total_time_bar_chart(doc, "Upload Results: Large File Set", upload_large_ranked, provider_labels)
 
     doc.add_section(WD_SECTION.NEW_PAGE)
     add_ranked_table(doc, "Download Results: All File Sizes", download_ranked, provider_labels)
     add_total_time_bar_chart(doc, "Download Results: All File Sizes", download_ranked, provider_labels)
+
+    doc.add_section(WD_SECTION.NEW_PAGE)
     add_traceroute_table(doc, report_data["traceroute_records"], enabled_traceroute_endpoints(provider_labels))
 
+    doc.add_section(WD_SECTION.NEW_PAGE)
     add_heading(doc, "Key Takeaways", 2)
     for section_title, details in filone_takeaway_sections(report_data, provider_labels):
         p = doc.add_paragraph(style="List Bullet")
@@ -1151,14 +1156,19 @@ def create_pdf(args: argparse.Namespace) -> Path:
     story.append(PageBreak())
     pdf_add_ranked_table(story, "Upload Results: Small / Standard File Set", upload_standard_ranked, styles, provider_labels)
     pdf_add_total_time_bar_chart(story, "Upload Results: Small / Standard File Set", upload_standard_ranked, styles, provider_labels)
+
+    story.append(PageBreak())
     pdf_add_ranked_table(story, "Upload Results: Large File Set", upload_large_ranked, styles, provider_labels)
     pdf_add_total_time_bar_chart(story, "Upload Results: Large File Set", upload_large_ranked, styles, provider_labels)
 
     story.append(PageBreak())
     pdf_add_ranked_table(story, "Download Results: All File Sizes", download_ranked, styles, provider_labels)
     pdf_add_total_time_bar_chart(story, "Download Results: All File Sizes", download_ranked, styles, provider_labels)
+
+    story.append(PageBreak())
     pdf_add_traceroutes(story, report_data["traceroute_records"], styles, enabled_traceroute_endpoints(provider_labels))
 
+    story.append(PageBreak())
     pdf_add_heading(story, "Key Takeaways", styles)
     for section_title, details in filone_takeaway_sections(report_data, provider_labels):
         story.append(Paragraph("&bull; <b>" + html.escape(section_title) + "</b>", styles["body"]))
