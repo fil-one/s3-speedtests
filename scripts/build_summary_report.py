@@ -970,8 +970,11 @@ def pdf_styles() -> dict[str, Any]:
 
 
 def pdf_paragraph(text: Any, style: Any) -> Any:
+    raw = str(text)
+    if raw.startswith('<font color="#') and raw.endswith("</font>"):
+        return Paragraph(raw, style)
     escaped_lines = []
-    for line in str(text).split("\n"):
+    for line in raw.split("\n"):
         escaped = html.escape(line)
         if line.startswith("Total Time:"):
             escaped = f"<b>{escaped}</b>"
@@ -1049,15 +1052,12 @@ def pdf_add_total_time_bar_chart(story: list[Any], title: str, rows: list[tuple[
         return
     story.append(Paragraph(html.escape(f"{title}: Total Time Ranking"), styles["body"]))
     max_total = max(row["total_seconds"] for row in chart_rows)
-    table_rows = [["Rank", "Provider", "Total Time"] + [""] * BAR_SEGMENTS]
-    backgrounds = []
+    table_rows = [["Rank", "Provider", "Total Time", "Bar"]]
     for rank, row in enumerate(chart_rows, start=1):
-        table_row_idx = len(table_rows)
         active = max(1, round((row["total_seconds"] / max_total) * BAR_SEGMENTS)) if max_total else 0
-        table_rows.append([rank, row["label"], fmt_seconds(row["total_seconds"])] + [""] * BAR_SEGMENTS)
-        for idx in range(active):
-            backgrounds.append((table_row_idx, 3 + idx, row["fill"]))
-    story.append(pdf_table(table_rows, [0.35, 1.8, 0.75] + [0.105] * BAR_SEGMENTS, styles, backgrounds=backgrounds))
+        bar = f'<font color="#{row["fill"]}">' + ("&#9608;" * active) + "</font>"
+        table_rows.append([rank, row["label"], fmt_seconds(row["total_seconds"]), bar])
+    story.append(pdf_table(table_rows, [0.45, 3.25, 0.95, 2.4], styles))
 
 
 def pdf_add_network_table(story: list[Any], records: list[dict[str, Any]], styles: dict[str, Any]) -> None:
