@@ -496,6 +496,39 @@ def latest_run_records(records: list[dict[str, Any]], record_type: str, file_set
     return [record for record in candidates if str(record.get("run_id", "")) == latest_run_id]
 
 
+def summary_target_key(record: dict[str, Any]) -> tuple[str, str, str, str, str, str, str]:
+    return (
+        provider_key(str(record.get("provider", ""))),
+        str(record.get("target_section", "")).strip(),
+        str(record.get("bucket", "")).strip(),
+        str(record.get("region", "")).strip(),
+        str(record.get("endpoint_url", "")).strip(),
+        str(record.get("operation", "")).strip(),
+        str(record.get("file_size_mib", "")).strip(),
+    )
+
+
+def summary_recency_key(record: dict[str, Any]) -> tuple[str, str]:
+    return (
+        str(record.get("saved_at_utc") or ""),
+        str(record.get("run_id") or ""),
+    )
+
+
+def latest_records_by_target(records: list[dict[str, Any]], record_type: str, file_set: str | None = None) -> list[dict[str, Any]]:
+    candidates = [
+        record for record in records
+        if record.get("record_type") == record_type and (file_set is None or record.get("file_set") == file_set)
+    ]
+    selected: dict[tuple[str, str, str, str, str, str, str], dict[str, Any]] = {}
+    for record in candidates:
+        key = summary_target_key(record)
+        previous = selected.get(key)
+        if previous is None or summary_recency_key(record) >= summary_recency_key(previous):
+            selected[key] = record
+    return sorted(selected.values(), key=lambda record: summary_target_key(record))
+
+
 def ranking_total_elapsed(row: dict[str, Any]) -> float:
     value = row.get("total_elapsed_seconds")
     if value is None or value == "":
@@ -869,16 +902,16 @@ def load_report_data(data_dir: Path, provider_labels: dict[str, dict[str, Any]] 
     if not traceroute_records:
         traceroute_records = load_jsonl(latest(data_dir, "s3_provider_traceroutes_*.jsonl", "s3_provider_traceroutes.jsonl"))
 
-    upload_standard_records = latest_run_records(upload_records, "s3_upload_summary", "standard")
-    upload_large_records = latest_run_records(upload_records, "s3_upload_summary", "large")
-    download_latest_records = latest_run_records(download_records, "s3_download_summary")
+    upload_standard_records = latest_records_by_target(upload_records, "s3_upload_summary", "standard")
+    upload_large_records = latest_records_by_target(upload_records, "s3_upload_summary", "large")
+    download_latest_records = latest_records_by_target(download_records, "s3_download_summary")
 
     upload_standard = transfer_rows(upload_standard_records, "s3_upload_summary", "standard", provider_labels)
     upload_large = transfer_rows(upload_large_records, "s3_upload_summary", "large", provider_labels)
     if not upload_standard:
-        upload_standard = [r for r in transfer_rows(latest_run_records(upload_records, "s3_upload_summary"), "s3_upload_summary", provider_labels=provider_labels) if r["size_mib"] <= 1024]
+        upload_standard = [r for r in transfer_rows(latest_records_by_target(upload_records, "s3_upload_summary"), "s3_upload_summary", provider_labels=provider_labels) if r["size_mib"] <= 1024]
     if not upload_large:
-        upload_large = [r for r in transfer_rows(latest_run_records(upload_records, "s3_upload_summary"), "s3_upload_summary", provider_labels=provider_labels) if r["size_mib"] >= 1024]
+        upload_large = [r for r in transfer_rows(latest_records_by_target(upload_records, "s3_upload_summary"), "s3_upload_summary", provider_labels=provider_labels) if r["size_mib"] >= 1024]
     download = transfer_rows(download_latest_records, "s3_download_summary", provider_labels=provider_labels)
     sizes = sorted({row["size_mib"] for row in upload_standard + upload_large + download})
 
