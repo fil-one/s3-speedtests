@@ -9,7 +9,7 @@ The scripts write JSONL and logs to `/dataoutput`, use generated payloads in `/t
 Run this on a fresh apt-based Linux VM:
 
 ```bash
-git clone <your-repo-url> filone-speedtests
+git clone https://github.com/fil-one/s3-speedtests filone-speedtests
 cd filone-speedtests
 sudo ./scripts/setup_vm.sh
 ```
