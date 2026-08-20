@@ -386,9 +386,10 @@ def compact_provider(provider: str) -> str:
 
 def is_filone_row(row: dict[str, Any], provider_labels: dict[str, dict[str, Any]]) -> bool:
     provider = provider_key(str(row.get("provider", "")))
-    if provider in {"f1", "fil.one", "filone"}:
+    if provider in {"f1", "fil.one", "filone"} or provider.startswith("f1-"):
         return True
-    return str(label_from_row(row, provider_labels).get("name") or "").strip().lower() == "fil.one"
+    label_name = str(label_from_row(row, provider_labels).get("name") or "").strip().lower()
+    return "fil.one" in label_name or "filone" in label_name
 
 
 def summary_total_elapsed(record: dict[str, Any]) -> float | None:
@@ -414,6 +415,13 @@ def transfer_cell_text(row: dict[str, Any], provider_labels: dict[str, dict[str,
     ]
     if row.get("median_elapsed_seconds") is not None:
         lines.append(f"Median time {fmt_seconds(row.get('median_elapsed_seconds'))}")
+    attempts = row.get("attempts")
+    successes = row.get("successes")
+    failures = row.get("failures")
+    if attempts is not None and successes is not None:
+        lines.append(f"Success {successes}/{attempts}")
+    if failures:
+        lines.append(f"Failed {failures}")
     return "\n".join(lines)
 
 
@@ -430,25 +438,43 @@ def full_traceroute_block(record: dict[str, Any]) -> str:
     return f"$ {traceroute_command(record)}\n{trace_output}"
 
 
-def transfer_rows(records: list[dict[str, Any]], record_type: str, file_set: str | None = None) -> list[dict[str, Any]]:
+def transfer_rows(
+    records: list[dict[str, Any]],
+    record_type: str,
+    file_set: str | None = None,
+    provider_labels: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     rows = []
+    provider_labels = provider_labels or {}
     for record in records:
         if record.get("record_type") != record_type:
             continue
         if file_set and record.get("file_set") != file_set:
             continue
         provider = provider_key(str(record.get("provider", "")))
-        if provider not in PROVIDERS:
+        bucket = str(record.get("bucket", "")).strip()
+        section = str(record.get("target_section", "")).strip()
+        has_config_label = any(
+            key in provider_labels
+            for key in (
+                f"section:{section}" if section else "",
+                f"provider:{provider}" if provider else "",
+                f"bucket:{bucket}" if bucket else "",
+                f"provider_bucket:{provider}:{bucket}" if provider and bucket else "",
+            )
+        )
+        if provider not in PROVIDERS and not has_config_label:
             continue
         rows.append({
             "provider": provider,
-            "bucket": record.get("bucket", ""),
-            "target_section": record.get("target_section", ""),
+            "bucket": bucket,
+            "target_section": section,
             "region": record.get("region", ""),
             "endpoint_url": record.get("endpoint_url", ""),
             "size_mib": float(record["file_size_mib"]),
             "attempts": record.get("attempt_count"),
             "successes": record.get("success_count"),
+            "failures": record.get("failure_count"),
             "median_mbps": record.get("median_throughput_mbps"),
             "avg_mbps": record.get("avg_throughput_mbps"),
             "total_elapsed_seconds": summary_total_elapsed(record),
@@ -611,6 +637,20 @@ def set_cell_text(cell, text: str, bold_first_line: bool = False, font_size: flo
         run.bold = (bold_first_line and idx == 0) or line.startswith("Total Time:")
 
 
+def rank_column_label(index: int) -> str:
+    if index == 0:
+        return "Fastest"
+    rank = index + 1
+    suffix = "th"
+    if rank % 100 not in {11, 12, 13}:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(rank % 10, "th")
+    return f"{rank}{suffix}"
+
+
+def ranked_provider_column_count(rows: list[tuple[float, list[dict[str, Any]]]]) -> int:
+    return max(4, max((len(members) for _size, members in rows), default=0))
+
+
 def shade_cell(cell, fill: str) -> None:
     tc_pr = cell._tc.get_or_add_tcPr()
     shd = tc_pr.find(qn("w:shd"))
@@ -696,21 +736,24 @@ def add_ranked_table(doc: Document, title: str, rows: list[tuple[float, list[dic
     if not rows:
         add_body(doc, "No matching summary records were found for this section.")
         return
-    table = doc.add_table(rows=1, cols=5)
-    for idx, header in enumerate(["File size / count", "Fastest", "2nd", "3rd", "4th"]):
+    provider_cols = ranked_provider_column_count(rows)
+    table = doc.add_table(rows=1, cols=1 + provider_cols)
+    headers = ["File size / count"] + [rank_column_label(idx) for idx in range(provider_cols)]
+    for idx, header in enumerate(headers):
         set_cell_text(table.rows[0].cells[idx], header, bold_first_line=True, font_size=8.5)
     for size, members in rows:
         cells = table.add_row().cells
         set_cell_text(cells[0], file_size_label(size, members), bold_first_line=True, font_size=8.5)
-        for idx in range(4):
+        for idx in range(provider_cols):
             text = "n/a"
             if idx < len(members):
                 m = members[idx]
                 text = transfer_cell_text(m, provider_labels)
-            set_cell_text(cells[idx + 1], text, bold_first_line=True, font_size=7.2)
+            set_cell_text(cells[idx + 1], text, bold_first_line=True, font_size=7.0)
             if idx < len(members) and is_filone_row(members[idx], provider_labels):
                 shade_cell(cells[idx + 1], FILONE_BRAND_FILL)
-    style_table(table, [0.75, 1.43, 1.43, 1.43, 1.43])
+    provider_width = (6.5 - 0.75) / provider_cols
+    style_table(table, [0.75] + [provider_width] * provider_cols)
 
 
 def add_total_time_bar_chart(doc: Document, title: str, rows: list[tuple[float, list[dict[str, Any]]]], provider_labels: dict[str, dict[str, Any]]) -> None:
@@ -812,7 +855,8 @@ def add_specs_table(doc: Document, args: argparse.Namespace) -> None:
         shade_cell(row.cells[0], "F1F3F4")
 
 
-def load_report_data(data_dir: Path) -> dict[str, Any]:
+def load_report_data(data_dir: Path, provider_labels: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+    provider_labels = provider_labels or {}
     network_records = load_jsonl(data_dir / "network_speedtest_ookla_summary.jsonl")
     upload_records = load_jsonl(data_dir / "s3_upload_speedtest_summary.jsonl")
     download_records = load_jsonl(data_dir / "s3_download_speedtest_summary.jsonl")
@@ -829,13 +873,13 @@ def load_report_data(data_dir: Path) -> dict[str, Any]:
     upload_large_records = latest_run_records(upload_records, "s3_upload_summary", "large")
     download_latest_records = latest_run_records(download_records, "s3_download_summary")
 
-    upload_standard = transfer_rows(upload_standard_records, "s3_upload_summary", "standard")
-    upload_large = transfer_rows(upload_large_records, "s3_upload_summary", "large")
+    upload_standard = transfer_rows(upload_standard_records, "s3_upload_summary", "standard", provider_labels)
+    upload_large = transfer_rows(upload_large_records, "s3_upload_summary", "large", provider_labels)
     if not upload_standard:
-        upload_standard = [r for r in transfer_rows(latest_run_records(upload_records, "s3_upload_summary"), "s3_upload_summary") if r["size_mib"] <= 1024]
+        upload_standard = [r for r in transfer_rows(latest_run_records(upload_records, "s3_upload_summary"), "s3_upload_summary", provider_labels=provider_labels) if r["size_mib"] <= 1024]
     if not upload_large:
-        upload_large = [r for r in transfer_rows(latest_run_records(upload_records, "s3_upload_summary"), "s3_upload_summary") if r["size_mib"] >= 1024]
-    download = transfer_rows(download_latest_records, "s3_download_summary")
+        upload_large = [r for r in transfer_rows(latest_run_records(upload_records, "s3_upload_summary"), "s3_upload_summary", provider_labels=provider_labels) if r["size_mib"] >= 1024]
+    download = transfer_rows(download_latest_records, "s3_download_summary", provider_labels=provider_labels)
     sizes = sorted({row["size_mib"] for row in upload_standard + upload_large + download})
 
     return {
@@ -897,8 +941,8 @@ def create_doc(args: argparse.Namespace) -> Path:
     data_dir = Path(args.data_dir)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    report_data = load_report_data(data_dir)
     provider_labels = load_provider_labels(Path(args.targets))
+    report_data = load_report_data(data_dir, provider_labels)
 
     stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     docx = output_dir / f"s3_provider_speedtest_summary_{stamp}.docx"
@@ -1034,12 +1078,13 @@ def pdf_add_ranked_table(story: list[Any], title: str, rows: list[tuple[float, l
     if not rows:
         pdf_add_body(story, "No matching summary records were found for this section.", styles)
         return
-    table_rows = [["File size / count", "Fastest", "2nd", "3rd", "4th"]]
+    provider_cols = ranked_provider_column_count(rows)
+    table_rows = [["File size / count"] + [rank_column_label(idx) for idx in range(provider_cols)]]
     backgrounds = []
     for size, members in rows:
         row = [file_size_label(size, members)]
         table_row_idx = len(table_rows)
-        for idx in range(4):
+        for idx in range(provider_cols):
             text = "n/a"
             if idx < len(members):
                 member = members[idx]
@@ -1048,7 +1093,8 @@ def pdf_add_ranked_table(story: list[Any], title: str, rows: list[tuple[float, l
                     backgrounds.append((table_row_idx, idx + 1, FILONE_BRAND_FILL))
             row.append(text)
         table_rows.append(row)
-    story.append(pdf_table(table_rows, [1.05, 2.05, 2.05, 2.05, 2.05], styles, backgrounds=backgrounds))
+    provider_width = (9.4 - 1.05) / provider_cols
+    story.append(pdf_table(table_rows, [1.05] + [provider_width] * provider_cols, styles, backgrounds=backgrounds))
 
 
 def pdf_add_total_time_bar_chart(story: list[Any], title: str, rows: list[tuple[float, list[dict[str, Any]]]], styles: dict[str, Any], provider_labels: dict[str, dict[str, Any]]) -> None:
@@ -1124,8 +1170,8 @@ def create_pdf(args: argparse.Namespace) -> Path:
     data_dir = Path(args.data_dir)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    report_data = load_report_data(data_dir)
     provider_labels = load_provider_labels(Path(args.targets))
+    report_data = load_report_data(data_dir, provider_labels)
 
     stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     pdf = output_dir / f"s3_provider_speedtest_summary_{stamp}.pdf"
