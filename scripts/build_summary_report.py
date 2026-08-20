@@ -552,6 +552,42 @@ def ranked_by_size(rows: list[dict[str, Any]]) -> list[tuple[float, list[dict[st
     return grouped
 
 
+def fill_missing_provider_size_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not rows:
+        return rows
+    sizes = sorted({row["size_mib"] for row in rows})
+    provider_samples: dict[tuple[str, str], dict[str, Any]] = {}
+    existing = set()
+    for row in rows:
+        provider_key_value = (str(row.get("provider") or ""), str(row.get("bucket") or ""))
+        provider_samples.setdefault(provider_key_value, row)
+        existing.add((provider_key_value, row["size_mib"]))
+
+    completed = list(rows)
+    for provider_key_value, sample in provider_samples.items():
+        for size in sizes:
+            if (provider_key_value, size) in existing:
+                continue
+            completed.append({
+                "provider": sample.get("provider", ""),
+                "bucket": sample.get("bucket", ""),
+                "target_section": sample.get("target_section", ""),
+                "region": sample.get("region", ""),
+                "endpoint_url": sample.get("endpoint_url", ""),
+                "size_mib": size,
+                "attempts": 1,
+                "successes": 0,
+                "failures": 1,
+                "median_mbps": None,
+                "avg_mbps": None,
+                "total_elapsed_seconds": None,
+                "median_elapsed_seconds": None,
+                "avg_elapsed_seconds": None,
+                "missing_result": True,
+            })
+    return completed
+
+
 def file_size_count(members: list[dict[str, Any]]) -> int | None:
     counts = []
     for row in members:
@@ -913,6 +949,9 @@ def load_report_data(data_dir: Path, provider_labels: dict[str, dict[str, Any]] 
     if not upload_large:
         upload_large = [r for r in transfer_rows(latest_records_by_target(upload_records, "s3_upload_summary"), "s3_upload_summary", provider_labels=provider_labels) if r["size_mib"] >= 1024]
     download = transfer_rows(download_latest_records, "s3_download_summary", provider_labels=provider_labels)
+    upload_standard = fill_missing_provider_size_rows(upload_standard)
+    upload_large = fill_missing_provider_size_rows(upload_large)
+    download = fill_missing_provider_size_rows(download)
     sizes = sorted({row["size_mib"] for row in upload_standard + upload_large + download})
 
     return {
