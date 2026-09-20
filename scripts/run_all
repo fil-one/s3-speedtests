@@ -138,6 +138,6 @@ run_step "s3_provider_traceroutes" env OUTPUT_DIR="$OUTPUT_DIR" TARGETS_FILE="$T
 run_step "s3_upload_standard" "$SCRIPT_DIR/s3_upload_speedtest.sh" "${UPLOAD_COMMON[@]}" --file-set standard
 run_step "s3_upload_large" "$SCRIPT_DIR/s3_upload_speedtest.sh" "${UPLOAD_COMMON[@]}" --file-set large
 run_step "s3_download_full" "$SCRIPT_DIR/s3_download_speedtest.sh" "${DOWNLOAD_COMMON[@]}" --file-set full
-run_step "build_summary_report" "$SCRIPT_DIR/build_summary_report.py" --data-dir "$OUTPUT_DIR" --output-dir "${OUTPUT_DIR}/reports"
+run_step "build_summary_report" "$SCRIPT_DIR/build_summary_report.py" --data-dir "$OUTPUT_DIR" --output-dir "${OUTPUT_DIR}/reports" --tests-started-at-utc "$RUN_ID"
 
 log "All benchmark steps completed"

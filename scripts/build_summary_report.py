@@ -219,6 +219,45 @@ def command_text(cmd: list[str]) -> str:
         return ""
 
 
+def parse_utc_datetime(value: str) -> dt.datetime:
+    raw = value.strip()
+    if not raw:
+        raise ValueError("timestamp is empty")
+    try:
+        parsed = dt.datetime.strptime(raw, "%Y%m%dT%H%M%SZ").replace(tzinfo=dt.UTC)
+    except ValueError:
+        parsed = dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.UTC)
+    return parsed.astimezone(dt.UTC)
+
+
+def format_tests_started_at_utc(value: str) -> str:
+    if not value:
+        return "unknown"
+    return parse_utc_datetime(value).strftime("%H:%M:%S UTC %B %d, %Y")
+
+
+def latest_run_all_started_at_utc(data_dir: Path) -> str:
+    run_logs = sorted(data_dir.glob("run_all_*.log"), reverse=True)
+    for path in run_logs:
+        match = re.fullmatch(r"run_all_(\d{8}T\d{6}Z)\.log", path.name)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def resolve_tests_started_at_utc(args: argparse.Namespace) -> None:
+    value = args.tests_started_at_utc or latest_run_all_started_at_utc(Path(args.data_dir))
+    if value:
+        try:
+            parse_utc_datetime(value)
+        except ValueError as exc:
+            raise SystemExit(f"Invalid --tests-started-at-utc value {value!r}: {exc}") from exc
+    args.tests_started_at_utc = value
+    args.tests_started_display = format_tests_started_at_utc(value)
+
+
 def detect_hostname() -> str:
     return command_text(["hostname"]) or os.environ.get("HOSTNAME", "") or "unknown"
 
@@ -905,8 +944,9 @@ def add_traceroute_table(doc: Document, records: list[dict[str, Any]], endpoints
 
 
 def add_specs_table(doc: Document, args: argparse.Namespace) -> None:
-    table = doc.add_table(rows=6, cols=2)
+    table = doc.add_table(rows=7, cols=2)
     specs = [
+        ("Tests started", args.tests_started_display),
         ("Source provider", args.source_provider),
         ("Source location", args.source_location),
         ("Hostname", args.node_hostname),
@@ -1134,6 +1174,7 @@ def pdf_add_body(story: list[Any], text: str, styles: dict[str, Any]) -> None:
 
 def pdf_add_specs_table(story: list[Any], args: argparse.Namespace, styles: dict[str, Any]) -> None:
     rows = [
+        ["Tests started", args.tests_started_display],
         ["Source provider", args.source_provider],
         ["Source location", args.source_location],
         ["Hostname", args.node_hostname],
@@ -1309,8 +1350,14 @@ def main() -> int:
     parser.add_argument("--node-network", default=os.environ.get("SOURCE_NODE_NETWORK", "unknown"), help="Source node network description")
     parser.add_argument("--node-compute", default="", help="Source node compute description; auto-detected with nproc when omitted")
     parser.add_argument("--node-memory", default="", help="Source node memory description; auto-detected with free/procfs when omitted")
+    parser.add_argument(
+        "--tests-started-at-utc",
+        default=os.environ.get("TESTS_STARTED_AT_UTC", ""),
+        help="UTC benchmark-suite start time (ISO 8601 or YYYYMMDDTHHMMSSZ); inferred from the latest run_all log when omitted",
+    )
     parser.add_argument("--no-prompt", action="store_true", help="Do not prompt for source provider/location; use flags, env vars, or fallback values")
     args = parser.parse_args()
+    resolve_tests_started_at_utc(args)
     args = resolve_source_context(args)
     outputs = []
     if args.format in {"docx", "both"}:

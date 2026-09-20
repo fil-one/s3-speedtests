@@ -260,6 +260,8 @@ Provider names and regions in the upload/download result tables are read from `/
 
 When run interactively, the report builder prompts for the source node provider/name and source node location. It auto-detects hostname, vCPU count, and RAM from the VM.
 
+The Test Node section includes the exact UTC time the benchmark suite started. `scripts/run_all` passes this time to the report builder automatically. When rebuilding a report directly, the builder infers it from the latest `run_all_*.log`, or you can set it explicitly with `--tests-started-at-utc 20260920T140732Z`.
+
 Prompted run:
 
 ```bash
