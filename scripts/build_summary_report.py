@@ -46,6 +46,7 @@ PROVIDER_NAMES = {
 }
 
 FILONE_BRAND_FILL = "C9DAF8"
+FAILED_BAR_FILL = "F4CCCC"
 BAR_SEGMENTS = 16
 PROVIDER_BAR_FILLS = {
     "aws": "FF9900",
@@ -578,6 +579,23 @@ def ranking_total_elapsed(row: dict[str, Any]) -> float:
         return float("inf")
 
 
+def transfer_row_failed(row: dict[str, Any]) -> bool:
+    if row.get("missing_result"):
+        return True
+    try:
+        failures = int(row.get("failures") or 0)
+    except (TypeError, ValueError):
+        failures = 0
+    if failures > 0:
+        return True
+    try:
+        attempts = int(row.get("attempts"))
+        successes = int(row.get("successes"))
+    except (TypeError, ValueError):
+        return False
+    return successes < attempts
+
+
 def ranked_by_size(rows: list[dict[str, Any]]) -> list[tuple[float, list[dict[str, Any]]]]:
     grouped = []
     for size in sorted({row["size_mib"] for row in rows}):
@@ -660,8 +678,6 @@ def total_time_chart_rows(rows: list[tuple[float, list[dict[str, Any]]]], provid
     for _size, members in rows:
         for row in members:
             total = ranking_total_elapsed(row)
-            if total == float("inf"):
-                continue
             key = provider_key(str(row.get("provider", ""))) or provider_chart_label(row, provider_labels)
             if key not in totals:
                 totals[key] = {
@@ -669,9 +685,19 @@ def total_time_chart_rows(rows: list[tuple[float, list[dict[str, Any]]]], provid
                     "label": provider_chart_label(row, provider_labels),
                     "fill": provider_bar_fill(row, provider_labels),
                     "total_seconds": 0.0,
+                    "failed": False,
                 }
-            totals[key]["total_seconds"] += total
-    return sorted(totals.values(), key=lambda row: (row["total_seconds"], row["label"]))
+            totals[key]["failed"] = totals[key]["failed"] or transfer_row_failed(row) or total == float("inf")
+            if total != float("inf"):
+                totals[key]["total_seconds"] += total
+    return sorted(
+        totals.values(),
+        key=lambda row: (
+            row["failed"],
+            row["total_seconds"] if not row["failed"] else float("inf"),
+            row["label"],
+        ),
+    )
 
 
 def pct_delta(current: float, reference: float) -> float | None:
@@ -869,23 +895,31 @@ def add_total_time_bar_chart(doc: Document, title: str, rows: list[tuple[float, 
     if not chart_rows:
         return
     add_body(doc, f"{title}: Total Time Ranking")
-    max_total = max(row["total_seconds"] for row in chart_rows)
-    table = doc.add_table(rows=1, cols=3 + BAR_SEGMENTS)
+    successful_totals = [row["total_seconds"] for row in chart_rows if not row["failed"]]
+    max_total = max(successful_totals, default=0)
+    table = doc.add_table(rows=1, cols=4)
     header_cells = table.rows[0].cells
-    for idx, header in enumerate(["Rank", "Provider", "Total Time"]):
+    for idx, header in enumerate(["Rank", "Provider", "Total Time", "Bar"]):
         set_cell_text(header_cells[idx], header, bold_first_line=True, font_size=7.4)
-    for idx in range(BAR_SEGMENTS):
-        set_cell_text(header_cells[3 + idx], "", font_size=6.0)
     for rank, row in enumerate(chart_rows, start=1):
         cells = table.add_row().cells
         set_cell_text(cells[0], str(rank), font_size=7.0)
         set_cell_text(cells[1], row["label"], bold_first_line=True, font_size=6.8)
-        set_cell_text(cells[2], fmt_seconds(row["total_seconds"]), bold_first_line=True, font_size=7.0)
-        active = max(1, round((row["total_seconds"] / max_total) * BAR_SEGMENTS)) if max_total else 0
-        for idx in range(BAR_SEGMENTS):
-            set_cell_text(cells[3 + idx], "", font_size=6.0)
-            shade_cell(cells[3 + idx], row["fill"] if idx < active else "FFFFFF")
-    style_table(table, [0.35, 1.75, 0.8] + [0.14] * BAR_SEGMENTS)
+        total_text = "FAILED" if row["failed"] else fmt_seconds(row["total_seconds"])
+        set_cell_text(cells[2], total_text, bold_first_line=True, font_size=7.0)
+        active = BAR_SEGMENTS if row["failed"] else (max(1, round((row["total_seconds"] / max_total) * BAR_SEGMENTS)) if max_total else 0)
+        fill = FAILED_BAR_FILL if row["failed"] else row["fill"]
+        bar_text = "FAILED" if row["failed"] else ("\u2588" * active)
+        set_cell_text(cells[3], bar_text, bold_first_line=row["failed"], font_size=8.0)
+        if row["failed"]:
+            shade_cell(cells[3], fill)
+        else:
+            for paragraph in cells[3].paragraphs:
+                for run in paragraph.runs:
+                    run.font.color.rgb = RGBColor.from_string(fill)
+    style_table(table, [0.45, 2.65, 0.9, 2.5])
+    if any(row["failed"] for row in chart_rows):
+        add_body(doc, "FAILED indicates that at least one transfer failed. Failed providers are ranked last, and their incomplete elapsed time is not used for ranking.")
 
 
 def add_network_table(doc: Document, records: list[dict[str, Any]]) -> None:
@@ -1215,13 +1249,18 @@ def pdf_add_total_time_bar_chart(story: list[Any], title: str, rows: list[tuple[
     if not chart_rows:
         return
     story.append(Paragraph(html.escape(f"{title}: Total Time Ranking"), styles["body"]))
-    max_total = max(row["total_seconds"] for row in chart_rows)
+    successful_totals = [row["total_seconds"] for row in chart_rows if not row["failed"]]
+    max_total = max(successful_totals, default=0)
     table_rows = [["Rank", "Provider", "Total Time", "Bar"]]
     for rank, row in enumerate(chart_rows, start=1):
-        active = max(1, round((row["total_seconds"] / max_total) * BAR_SEGMENTS)) if max_total else 0
-        bar = f'<font color="#{row["fill"]}">' + ("&#9608;" * active) + "</font>"
-        table_rows.append([rank, row["label"], fmt_seconds(row["total_seconds"]), bar])
+        active = BAR_SEGMENTS if row["failed"] else (max(1, round((row["total_seconds"] / max_total) * BAR_SEGMENTS)) if max_total else 0)
+        fill = FAILED_BAR_FILL if row["failed"] else row["fill"]
+        bar = f'<font color="#{fill}">' + ("&#9608;" * active) + "</font>"
+        total_text = "FAILED" if row["failed"] else fmt_seconds(row["total_seconds"])
+        table_rows.append([rank, row["label"], total_text, bar])
     story.append(pdf_table(table_rows, [0.45, 3.25, 0.95, 2.4], styles))
+    if any(row["failed"] for row in chart_rows):
+        pdf_add_body(story, "FAILED indicates that at least one transfer failed. Failed providers are ranked last, and their incomplete elapsed time is not used for ranking.", styles)
 
 
 def pdf_add_network_table(story: list[Any], records: list[dict[str, Any]], styles: dict[str, Any]) -> None:
