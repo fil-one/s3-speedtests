@@ -236,7 +236,8 @@ def parse_utc_datetime(value: str) -> dt.datetime:
 def format_tests_started_at_utc(value: str) -> str:
     if not value:
         return "unknown"
-    return parse_utc_datetime(value).strftime("%H:%M:%S UTC %B %d, %Y")
+    timestamp = parse_utc_datetime(value)
+    return f"{timestamp:%H:%M:%S} (UTC) on {timestamp:%B} {timestamp.day}, {timestamp.year}"
 
 
 def latest_run_all_started_at_utc(data_dir: Path) -> str:
@@ -248,8 +249,71 @@ def latest_run_all_started_at_utc(data_dir: Path) -> str:
     return ""
 
 
+def latest_timestamp_from_filenames(data_dir: Path, prefix: str) -> str:
+    pattern = re.compile(rf"{re.escape(prefix)}_(\d{{8}}T\d{{6}}Z)\.(?:jsonl|txt|log)")
+    timestamps = []
+    for path in data_dir.iterdir() if data_dir.exists() else []:
+        match = pattern.fullmatch(path.name)
+        if match:
+            timestamps.append(match.group(1))
+    return max(timestamps, default="")
+
+
+def earliest_record_timestamp(path: Path) -> str:
+    timestamps = []
+    for record in load_jsonl(path):
+        for key in ("started_at_utc", "run_id", "saved_at_utc"):
+            value = str(record.get(key) or "").strip()
+            if not value:
+                continue
+            try:
+                timestamps.append(parse_utc_datetime(value))
+                break
+            except ValueError:
+                continue
+    if not timestamps:
+        return ""
+    return min(timestamps).strftime("%Y%m%dT%H%M%SZ")
+
+
+def infer_tests_started_at_utc(data_dir: Path) -> str:
+    candidates = []
+    for prefix in (
+        "s3_access_check",
+        "s3_provider_traceroutes",
+        "s3_upload_speedtest_summary",
+        "s3_download_speedtest_summary",
+    ):
+        value = latest_timestamp_from_filenames(data_dir, prefix)
+        if value:
+            candidates.append(value)
+
+    network_timestamp = earliest_record_timestamp(data_dir / "network_speedtest_ookla_runs.jsonl")
+    if network_timestamp:
+        candidates.append(network_timestamp)
+
+    if candidates:
+        return min(candidates, key=parse_utc_datetime)
+
+    directory_entries = data_dir.iterdir() if data_dir.exists() else []
+    data_files = [
+        path
+        for path in directory_entries
+        if path.is_file() and path.suffix.lower() in {".jsonl", ".log", ".txt"}
+    ]
+    if not data_files:
+        return ""
+    newest_mtime = max(path.stat().st_mtime for path in data_files)
+    return dt.datetime.fromtimestamp(newest_mtime, tz=dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
 def resolve_tests_started_at_utc(args: argparse.Namespace) -> None:
-    value = args.tests_started_at_utc or latest_run_all_started_at_utc(Path(args.data_dir))
+    data_dir = Path(args.data_dir)
+    value = (
+        args.tests_started_at_utc
+        or latest_run_all_started_at_utc(data_dir)
+        or infer_tests_started_at_utc(data_dir)
+    )
     if value:
         try:
             parse_utc_datetime(value)
@@ -370,6 +434,61 @@ def fmt_trace_ips(value: Any) -> str:
     if isinstance(value, list):
         return "\n".join(str(item) for item in value[:3]) + ("\n..." if len(value) > 3 else "")
     return str(value)
+
+
+def friendly_network_target_label(value: Any) -> str:
+    label = str(value or "").strip()
+    if not label:
+        return ""
+    if label == "auto_nearest":
+        return "Automatic nearest"
+    return " ".join(
+        word.upper() if word.lower() in {"uk", "usa"} else word.capitalize()
+        for word in label.replace("-", "_").split("_")
+        if word
+    )
+
+
+def network_target_text(record: dict[str, Any]) -> str:
+    requested = friendly_network_target_label(record.get("target_label"))
+    server_name = str(record.get("target_server_name") or "").strip()
+    city = str(record.get("target_city") or "").strip()
+    country = str(record.get("target_country") or "").strip()
+    location = ", ".join(part for part in (city, country) if part)
+    actual = f"{server_name} ({location})" if server_name and location else server_name or location
+    if requested and actual:
+        return f"{requested}\nServer: {actual}"
+    return requested or actual or "n/a"
+
+
+def network_summary_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows = [record for record in records if record.get("record_type") == "network_speedtest_summary"]
+    explicit_server_ids = {
+        str(record.get("target_server_id") or "").strip()
+        for record in rows
+        if record.get("target_label") != "auto_nearest" and record.get("target_server_id")
+    }
+    explicit_locations = {
+        (
+            str(record.get("target_city") or "").strip().casefold(),
+            str(record.get("target_country") or "").strip().casefold(),
+        )
+        for record in rows
+        if record.get("target_label") != "auto_nearest" and record.get("target_city")
+    }
+
+    deduplicated = []
+    for record in rows:
+        if record.get("target_label") == "auto_nearest":
+            server_id = str(record.get("target_server_id") or "").strip()
+            location = (
+                str(record.get("target_city") or "").strip().casefold(),
+                str(record.get("target_country") or "").strip().casefold(),
+            )
+            if (server_id and server_id in explicit_server_ids) or (location[0] and location in explicit_locations):
+                continue
+        deduplicated.append(record)
+    return deduplicated
 
 
 def label_from_row(row: dict[str, Any], provider_labels: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -924,21 +1043,21 @@ def add_total_time_bar_chart(doc: Document, title: str, rows: list[tuple[float, 
 
 def add_network_table(doc: Document, records: list[dict[str, Any]]) -> None:
     add_heading(doc, "Node Network Baseline (Speedtest by Ookla)", 2)
-    rows = [r for r in records if r.get("record_type") == "network_speedtest_summary"]
+    rows = network_summary_rows(records)
     if not rows:
         add_body(doc, "No Ookla network summary records were found.")
         return
     table = doc.add_table(rows=1, cols=5)
-    for idx, header in enumerate(["Target", "Median ping", "Median download", "Median upload", "Packet loss"]):
+    for idx, header in enumerate(["Requested target / actual server", "Median ping", "Median download", "Median upload", "Packet loss"]):
         set_cell_text(table.rows[0].cells[idx], header, bold_first_line=True, font_size=8.5)
     for r in sorted(rows, key=lambda x: -(x.get("median_download_mbps") or 0)):
         cells = table.add_row().cells
-        set_cell_text(cells[0], f"{r.get('target_city') or r.get('target_label')}\n{r.get('target_country') or ''}", bold_first_line=True, font_size=8)
+        set_cell_text(cells[0], network_target_text(r), bold_first_line=True, font_size=8)
         set_cell_text(cells[1], f"{r.get('median_ping_ms', 0):.2f} ms", font_size=8)
         set_cell_text(cells[2], fmt_mbps(r.get("median_download_mbps")), font_size=8)
         set_cell_text(cells[3], fmt_mbps(r.get("median_upload_mbps")), font_size=8)
         set_cell_text(cells[4], f"{r.get('max_packet_loss_percent', 0)}%", font_size=8)
-    style_table(table, [1.25, 1.15, 1.35, 1.35, 1.0])
+    style_table(table, [1.8, 1.0, 1.3, 1.3, 1.1])
 
 
 def add_traceroute_table(doc: Document, records: list[dict[str, Any]], endpoints: set[str]) -> None:
@@ -1265,20 +1384,20 @@ def pdf_add_total_time_bar_chart(story: list[Any], title: str, rows: list[tuple[
 
 def pdf_add_network_table(story: list[Any], records: list[dict[str, Any]], styles: dict[str, Any]) -> None:
     pdf_add_heading(story, "Node Network Baseline (Speedtest by Ookla)", styles)
-    rows = [r for r in records if r.get("record_type") == "network_speedtest_summary"]
+    rows = network_summary_rows(records)
     if not rows:
         pdf_add_body(story, "No Ookla network summary records were found.", styles)
         return
-    table_rows = [["Target", "Median ping", "Median download", "Median upload", "Packet loss"]]
+    table_rows = [["Requested target / actual server", "Median ping", "Median download", "Median upload", "Packet loss"]]
     for row in sorted(rows, key=lambda x: -(x.get("median_download_mbps") or 0)):
         table_rows.append([
-            f"{row.get('target_city') or row.get('target_label')}\n{row.get('target_country') or ''}",
+            network_target_text(row),
             f"{row.get('median_ping_ms', 0):.2f} ms",
             fmt_mbps(row.get("median_download_mbps")),
             fmt_mbps(row.get("median_upload_mbps")),
             f"{row.get('max_packet_loss_percent', 0)}%",
         ])
-    story.append(pdf_table(table_rows, [2.0, 1.3, 1.7, 1.7, 1.1], styles))
+    story.append(pdf_table(table_rows, [2.6, 1.2, 1.6, 1.6, 1.0], styles))
 
 
 def pdf_trace_output(text: str) -> str:
@@ -1392,7 +1511,7 @@ def main() -> int:
     parser.add_argument(
         "--tests-started-at-utc",
         default=os.environ.get("TESTS_STARTED_AT_UTC", ""),
-        help="UTC benchmark-suite start time (ISO 8601 or YYYYMMDDTHHMMSSZ); inferred from the latest run_all log when omitted",
+        help="UTC benchmark-suite start time (ISO 8601 or YYYYMMDDTHHMMSSZ); inferred from run logs or data artifacts when omitted",
     )
     parser.add_argument("--no-prompt", action="store_true", help="Do not prompt for source provider/location; use flags, env vars, or fallback values")
     args = parser.parse_args()

@@ -43,19 +43,6 @@ WORLD_SERVERS=(
   "sydney_australia|1267"
 )
 
-WORLD_SERVERS=(
-  "new_york_usa|72800"
-  "ashburn_usa|1774"
-  "los_angeles_usa|16676"
-  "london_uk|24385"
-  "paris_france|61933"
-  "frankfurt_germany|3907"
-  "amsterdam_netherlands|52365"
-  "singapore|4235"
-  "tokyo_japan|7139"
-  "sydney_australia|1267"
-)
-
 # Format: label|lat|lon
 GEO_LOCATIONS=(
   "frankfurt_germany|50.1109|8.6821"
@@ -164,19 +151,6 @@ case "$NETWORK_SERVER_MODE" in
     ;;
   world)
     echo "World baseline servers:"
-    echo "  auto_nearest -> Ookla-selected nearest/best server"
-    ALL_SERVERS+=("auto_nearest|")
-    for item in "${WORLD_SERVERS[@]}"; do
-      label="${item%%|*}"
-      server_id="${item##*|}"
-      echo "  $label -> $server_id"
-      ALL_SERVERS+=("${label}|${server_id}")
-    done
-    ;;
-  world)
-    echo "World baseline servers:"
-    echo "  auto_nearest -> Ookla-selected nearest/best server"
-    ALL_SERVERS+=("auto_nearest|")
     for item in "${WORLD_SERVERS[@]}"; do
       label="${item%%|*}"
       server_id="${item##*|}"

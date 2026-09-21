@@ -84,7 +84,7 @@ The same behavior can be enabled with `TRANSFER_PROGRESS=1`:
 TRANSFER_PROGRESS=1 ./scripts/run_all --providers aws,wasabi
 ```
 
-By default, `run_all` uses minimal waits: `PAUSE_SECONDS=5`, `NETWORK_RUNS=1`, `NETWORK_SLEEP_SECONDS=5`, and `NETWORK_SERVER_MODE=auto`. Override them when you want more samples:
+By default, `run_all` uses minimal waits: `PAUSE_SECONDS=5`, `NETWORK_RUNS=1`, `NETWORK_SLEEP_SECONDS=5`, and `NETWORK_SERVER_MODE=world`. Override them when you want more samples:
 
 ```bash
 NETWORK_RUNS=3 NETWORK_SLEEP_SECONDS=30 PAUSE_SECONDS=10 ./scripts/run_all
@@ -134,18 +134,19 @@ Network baseline:
 RUNS=1 ./scripts/network_speedtest_ookla.sh
 ```
 
-By default, the network baseline uses Ookla automatic server selection, so it should pick a nearby/best server for the current VM location. This avoids the old Spain/Paris fixed-server behavior when the VM is in another region such as New York.
+By default, the network baseline uses the configured world server list so results cover the same explicit cities on every VM. Use `NETWORK_SERVER_MODE=auto` when only Ookla's nearby/best server is wanted.
 
 Network server modes:
 
 ```bash
 NETWORK_SERVER_MODE=auto RUNS=1 ./scripts/network_speedtest_ookla.sh
+NETWORK_SERVER_MODE=world RUNS=1 ./scripts/network_speedtest_ookla.sh
 NETWORK_SERVER_MODE=fixed RUNS=1 ./scripts/network_speedtest_ookla.sh
 NETWORK_SERVER_MODE=geo RUNS=1 ./scripts/network_speedtest_ookla.sh
 NETWORK_SERVER_MODE=all RUNS=1 ./scripts/network_speedtest_ookla.sh
 ```
 
-`auto` uses Ookla's selected server and does not call the Speedtest server-list API. `fixed` uses the legacy Barcelona, Madrid, and Paris server IDs. `geo` searches the Speedtest server-list API for the configured city coordinates and may be rate-limited by Ookla. `all` combines auto, fixed, and geo.
+`auto` uses Ookla's selected server and does not call the Speedtest server-list API. `world` uses the configured global server list without also running automatic-nearest, preventing the nearest location from duplicating one of the explicit cities. `fixed` uses the legacy Barcelona, Madrid, and Paris server IDs. `geo` searches the Speedtest server-list API for the configured city coordinates and may be rate-limited by Ookla. `all` combines auto, fixed, and geo. Reports also suppress an automatic-nearest row when historical data contains an explicit target for the same resolved city and country.
 
 Provider traceroutes:
 
@@ -260,7 +261,7 @@ Provider names and regions in the upload/download result tables are read from `/
 
 When run interactively, the report builder prompts for the source node provider/name and source node location. It auto-detects hostname, vCPU count, and RAM from the VM.
 
-The Test Node section includes the exact UTC time the benchmark suite started. `scripts/run_all` passes this time to the report builder automatically. When rebuilding a report directly, the builder infers it from the latest `run_all_*.log`, or you can set it explicitly with `--tests-started-at-utc 20260920T140732Z`.
+The Test Node section includes the UTC time the benchmark suite started, formatted as `14:07:32 (UTC) on September 20, 2026`. `scripts/run_all` passes this time to the report builder automatically. When rebuilding a report directly, the builder infers an approximate start time from timestamped artifacts in `/dataoutput`, the first saved network-test record, or a data-file modification time. You can set it explicitly with `--tests-started-at-utc 20260920T140732Z`.
 
 Prompted run:
 
