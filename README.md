@@ -40,6 +40,19 @@ To regenerate files even when matching filenames already exist:
 sudo ./scripts/setup_vm.sh --files-only --force-files
 ```
 
+### Test Files on a Developer Machine
+
+To run the scripts from a laptop (macOS or Linux) instead of the VM, generate
+the payload set without root into any directory and point the scripts at it
+with `--testfiles-dir`:
+
+```bash
+./scripts/generate_test_files.sh ~/s3-testfiles quick     # 1 MiB + 100 MiB
+./scripts/generate_test_files.sh ~/s3-testfiles standard  # everything up to 1 GiB
+./scripts/generate_test_files.sh ~/s3-testfiles large     # 1 GiB + 25 GiB + 50 GiB
+FORCE_FILES=1 ./scripts/generate_test_files.sh ~/s3-testfiles quick  # regenerate even if sizes match
+```
+
 ## Provider Config
 
 Setup seeds `/testfiles/s3_targets.ini` from `config/s3_targets.example.ini` if it does not already exist.

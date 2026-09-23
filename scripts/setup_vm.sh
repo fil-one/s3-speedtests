@@ -90,38 +90,13 @@ bytes_available() {
   df -Pk "$TESTFILES_DIR" | awk 'NR == 2 {print $4 * 1024}'
 }
 
-generate_file() {
-  local path="$1"
-  local mib="$2"
-  local expected_bytes=$((mib * 1024 * 1024))
-  local current_bytes=0
-  if [[ -f "$path" ]]; then
-    current_bytes="$(stat -c '%s' "$path")"
-  fi
-  if [[ "$FORCE_FILES" -eq 0 && "$current_bytes" -eq "$expected_bytes" ]]; then
-    echo "exists size_ok ${path}"
-    return
-  fi
-
-  echo "generating ${path} (${mib} MiB)"
-  local tmp="${path}.partial"
-  "${SUDO[@]}" rm -f "$tmp"
-  if ! "${SUDO[@]}" dd if=/dev/urandom of="$tmp" bs=1M count="$mib" iflag=fullblock status=progress; then
-    echo "ERROR: failed generating ${path}" >&2
-    "${SUDO[@]}" rm -f "$tmp"
-    exit 1
-  fi
-  "${SUDO[@]}" mv "$tmp" "$path"
-  "${SUDO[@]}" chmod 644 "$path"
-}
-
 generate_test_files() {
   if [[ "$SKIP_FILES" -ne 0 ]]; then
     echo "Skipping test payload generation because --skip-files was provided."
     return
   fi
 
-  for required in df awk stat dd seq; do
+  for required in df awk; do
     if ! command -v "$required" >/dev/null 2>&1; then
       echo "ERROR: required command not found for payload generation: $required" >&2
       exit 1
@@ -134,15 +109,7 @@ generate_test_files() {
     echo "WARNING: less than 90 GiB free under $TESTFILES_DIR; full payload generation may fail." >&2
   fi
 
-  for i in $(seq -w 1 100); do
-    generate_file "${TESTFILES_DIR}/random_${i}_1mib.bin" 1
-  done
-  for i in $(seq 1 5); do
-    generate_file "${TESTFILES_DIR}/random_${i}_100mib.bin" 100
-  done
-  generate_file "${TESTFILES_DIR}/random_001_1gib.bin" 1024
-  generate_file "${TESTFILES_DIR}/random_001_25gib.bin" 25600
-  generate_file "${TESTFILES_DIR}/random_001_50gib.bin" 51200
+  FORCE_FILES="$FORCE_FILES" "${repo_root}/scripts/generate_test_files.sh" "$TESTFILES_DIR" full
 }
 
 write_setup_manifest() {
