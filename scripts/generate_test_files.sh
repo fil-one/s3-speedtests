@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Generate the random_*.bin payload set the speed tests expect, on macOS or
-# Linux, without root. setup_vm.sh does the same as part of the Ubuntu VM
-# setup; use this when the test scripts run from a developer machine.
+# Linux, without root. setup_vm.sh calls this with the "full" set as part of
+# the Ubuntu VM setup; call it directly when the test scripts run from a
+# developer machine.
 #
 #   scripts/generate_test_files.sh <dir> <set>
 #
@@ -22,8 +23,9 @@ set_name="$2"
 FORCE_FILES="${FORCE_FILES:-0}"
 
 case "$(uname -s)" in
-  Darwin) file_size() { stat -f '%z' "$1"; }; dd_bs=1m ;;
-  *)      file_size() { stat -c '%s' "$1"; }; dd_bs=1M ;;
+  Darwin) file_size() { stat -f '%z' "$1"; }; dd_opts=(bs=1m status=progress) ;;
+  # GNU dd only: fullblock avoids short reads from /dev/urandom truncating the file.
+  *)      file_size() { stat -c '%s' "$1"; }; dd_opts=(bs=1M iflag=fullblock status=progress) ;;
 esac
 
 generate_file() {
@@ -37,7 +39,7 @@ generate_file() {
   echo "generating $path ($mib MiB)"
   local tmp="$path.partial"
   rm -f "$tmp"
-  dd if=/dev/urandom of="$tmp" bs="$dd_bs" count="$mib" status=none
+  dd if=/dev/urandom of="$tmp" count="$mib" "${dd_opts[@]}"
   [ "$(file_size "$tmp")" -eq "$expected" ] || { echo "ERROR: $tmp has the wrong size" >&2; rm -f "$tmp"; exit 1; }
   mv "$tmp" "$path"
 }
