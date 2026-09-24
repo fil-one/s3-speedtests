@@ -2,6 +2,7 @@ import importlib.util
 import os
 import tempfile
 import unittest
+from argparse import Namespace
 from pathlib import Path
 
 
@@ -104,6 +105,34 @@ class TestStartTimestampTest(unittest.TestCase):
 
             expected = REPORT.dt.datetime.fromtimestamp(1_795_000_100, tz=REPORT.dt.UTC).strftime("%Y%m%dT%H%M%SZ")
             self.assertEqual(REPORT.infer_tests_started_at_utc(data_dir), expected)
+
+
+class ReportNodeSpecsTest(unittest.TestCase):
+    def test_omits_hostname_and_network_from_report_output(self) -> None:
+        args = Namespace(
+            tests_started_display="12:00:00 (UTC) on September 24, 2026",
+            source_provider="Example provider",
+            source_location="Paris, France",
+            node_hostname="private-hostname",
+            node_network="private-network",
+            node_compute="16 vCPU",
+            node_memory="126 GB RAM",
+        )
+
+        specs = REPORT.report_node_specs(args)
+
+        self.assertEqual(
+            specs,
+            [
+                ("Tests started", args.tests_started_display),
+                ("Source provider", args.source_provider),
+                ("Source location", args.source_location),
+                ("Compute", args.node_compute),
+                ("Memory", args.node_memory),
+            ],
+        )
+        self.assertNotIn("private-hostname", str(specs))
+        self.assertNotIn("private-network", str(specs))
 
 
 class TracerouteEndpointTest(unittest.TestCase):

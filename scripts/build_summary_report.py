@@ -1109,17 +1109,19 @@ def add_traceroute_table(doc: Document, records: list[dict[str, Any]], endpoints
         add_monospace_block(doc, full_traceroute_block(r))
 
 
-def add_specs_table(doc: Document, args: argparse.Namespace) -> None:
-    table = doc.add_table(rows=7, cols=2)
-    specs = [
+def report_node_specs(args: argparse.Namespace) -> list[tuple[str, str]]:
+    return [
         ("Tests started", args.tests_started_display),
         ("Source provider", args.source_provider),
         ("Source location", args.source_location),
-        ("Hostname", args.node_hostname),
-        ("Network", args.node_network),
         ("Compute", args.node_compute),
         ("Memory", args.node_memory),
     ]
+
+
+def add_specs_table(doc: Document, args: argparse.Namespace) -> None:
+    specs = report_node_specs(args)
+    table = doc.add_table(rows=len(specs), cols=2)
     for row, (key, value) in zip(table.rows, specs):
         set_cell_text(row.cells[0], key, bold_first_line=True, font_size=9)
         set_cell_text(row.cells[1], value, font_size=9)
@@ -1339,15 +1341,7 @@ def pdf_add_body(story: list[Any], text: str, styles: dict[str, Any]) -> None:
 
 
 def pdf_add_specs_table(story: list[Any], args: argparse.Namespace, styles: dict[str, Any]) -> None:
-    rows = [
-        ["Tests started", args.tests_started_display],
-        ["Source provider", args.source_provider],
-        ["Source location", args.source_location],
-        ["Hostname", args.node_hostname],
-        ["Network", args.node_network],
-        ["Compute", args.node_compute],
-        ["Memory", args.node_memory],
-    ]
+    rows = [list(spec) for spec in report_node_specs(args)]
     story.append(pdf_table(rows, [1.7, 7.7], styles, repeat_header=False))
     story.append(Spacer(1, 0.08 * inch))
 
