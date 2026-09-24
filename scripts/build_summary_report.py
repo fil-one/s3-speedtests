@@ -138,12 +138,22 @@ def first_config_value(parser: configparser.ConfigParser, section: str, keys: li
     return ""
 
 
-def endpoint_host(endpoint_url: str) -> str:
+def endpoint_target(endpoint_url: str) -> tuple[str, str, int]:
     endpoint_url = endpoint_url.strip()
     if not endpoint_url:
-        return ""
+        return "", "", 443
     parsed = urlparse(endpoint_url if "://" in endpoint_url else f"https://{endpoint_url}")
-    return (parsed.netloc or parsed.path).split("/")[0]
+    host = parsed.hostname or ""
+    if not host:
+        return "", "", 443
+    port = parsed.port or (80 if parsed.scheme.lower() == "http" else 443)
+    authority_host = f"[{host}]" if ":" in host else host
+    authority = f"{authority_host}:{port}" if parsed.port is not None else authority_host
+    return authority, host, port
+
+
+def endpoint_host(endpoint_url: str) -> str:
+    return endpoint_target(endpoint_url)[0]
 
 
 def derived_endpoint(provider: str, region: str, endpoint_url: str) -> str:
@@ -207,7 +217,7 @@ def enabled_traceroute_endpoints(provider_labels: dict[str, dict[str, Any]]) -> 
 
 
 def filter_traceroute_records(records: list[dict[str, Any]], endpoints: set[str]) -> list[dict[str, Any]]:
-    rows = [r for r in records if r.get("test_type") == "tcp_traceroute_443"]
+    rows = [r for r in records if r.get("test_type") in {"tcp_traceroute", "tcp_traceroute_443"}]
     if not endpoints:
         return rows
     return [r for r in rows if str(r.get("endpoint") or "").lower() in endpoints]
@@ -589,7 +599,10 @@ def traceroute_command(record: dict[str, Any]) -> str:
     if command:
         return command
     endpoint = str(record.get("endpoint") or "endpoint")
-    return f"traceroute -T -p 443 -n -w 3 -q 3 -m 30 {endpoint}"
+    parsed_endpoint, parsed_host, parsed_port = endpoint_target(endpoint)
+    host = str(record.get("endpoint_host") or parsed_host or parsed_endpoint or endpoint)
+    port = record.get("endpoint_port") or parsed_port
+    return f"traceroute -T -p {port} -n -w 3 -q 3 -m 30 {host}"
 
 
 def full_traceroute_block(record: dict[str, Any]) -> str:
@@ -1087,7 +1100,7 @@ def add_traceroute_table(doc: Document, records: list[dict[str, Any]], endpoints
 
     run_ids = sorted({str(r.get("run_id")) for r in rows if r.get("run_id")})
     if run_ids:
-        add_body(doc, f"Traceroute source: TCP port 443 traceroute JSONL, latest included run_id {run_ids[-1]}. Total ms is the average RTT from the last responding hop in the traceroute output.")
+        add_body(doc, f"Traceroute source: TCP endpoint-port traceroute JSONL, latest included run_id {run_ids[-1]}. Total ms is the average RTT from the last responding hop in the traceroute output.")
 
     for r in rows:
         total_ms = fmt_ms(traceroute_total_ms(r))
@@ -1426,7 +1439,7 @@ def pdf_add_traceroutes(story: list[Any], records: list[dict[str, Any]], styles:
 
     run_ids = sorted({str(r.get("run_id")) for r in rows if r.get("run_id")})
     if run_ids:
-        pdf_add_body(story, f"Traceroute source: TCP port 443 traceroute JSONL, latest included run_id {run_ids[-1]}. Total ms is the average RTT from the last responding hop in the traceroute output.", styles)
+        pdf_add_body(story, f"Traceroute source: TCP endpoint-port traceroute JSONL, latest included run_id {run_ids[-1]}. Total ms is the average RTT from the last responding hop in the traceroute output.", styles)
 
     for row in rows:
         total_ms = fmt_ms(traceroute_total_ms(row))

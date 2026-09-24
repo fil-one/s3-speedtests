@@ -127,26 +127,36 @@ region_locations = {
     "us-west-2": "Oregon, USA",
 }
 
-def endpoint_host(endpoint_url: str) -> str:
+def endpoint_target(endpoint_url: str) -> tuple[str, str, int]:
     endpoint_url = endpoint_url.strip()
     if not endpoint_url:
-        return ""
+        return "", "", 443
     parsed = urlparse(endpoint_url if "://" in endpoint_url else f"https://{endpoint_url}")
-    return (parsed.netloc or parsed.path).split("/")[0]
+    host = parsed.hostname or ""
+    if not host:
+        return "", "", 443
+    port = parsed.port or (80 if parsed.scheme.lower() == "http" else 443)
+    authority_host = f"[{host}]" if ":" in host else host
+    authority = f"{authority_host}:{port}" if parsed.port is not None else authority_host
+    return authority, host, port
 
-def derived_endpoint(provider: str, region: str, endpoint_url: str) -> str:
-    host = endpoint_host(endpoint_url)
+def derived_target(provider: str, region: str, endpoint_url: str) -> tuple[str, str, int]:
+    endpoint, host, port = endpoint_target(endpoint_url)
     if host:
-        return host
+        return endpoint, host, port
     if provider in {"aws", "aws-test"} and region:
-        return f"s3.{region}.amazonaws.com"
+        host = f"s3.{region}.amazonaws.com"
+        return host, host, 443
     if provider == "wasabi" and region:
-        return f"s3.{region}.wasabisys.com"
+        host = f"s3.{region}.wasabisys.com"
+        return host, host, 443
     if provider == "backblaze" and region:
-        return f"s3.{region}.backblazeb2.com"
+        host = f"s3.{region}.backblazeb2.com"
+        return host, host, 443
     if provider in {"f1", "fil.one", "filone"} and region:
-        return f"{region}.s3.fil.one"
-    return ""
+        host = f"{region}.s3.fil.one"
+        return host, host, 443
+    return "", "", 443
 
 for section in parser.sections():
     enabled = parser.get(section, "enabled", fallback="false").strip().lower()
@@ -166,11 +176,13 @@ for section in parser.sections():
         or parser.get(section, "city_country", fallback="").strip()
         or region_locations.get(region, "")
     )
-    endpoint = derived_endpoint(provider, region, parser.get(section, "endpoint_url", fallback=""))
+    endpoint, trace_host, trace_port = derived_target(
+        provider, region, parser.get(section, "endpoint_url", fallback="")
+    )
     if not endpoint:
         continue
     region_location = f"{region} | {location}" if region and location else region or location or "n/a"
-    print(f"{display_name}::{region_location}::{endpoint}")
+    print("\t".join((display_name, region_location, endpoint, trace_host, str(trace_port))))
 PY
 )
 
@@ -187,10 +199,7 @@ echo | tee -a "$TXT_OUT"
 matched=0
 
 for item in "${PROVIDERS[@]}"; do
-  provider="${item%%::*}"
-  rest="${item#*::}"
-  region_location="${rest%%::*}"
-  endpoint="${rest##*::}"
+  IFS=$'\t' read -r provider region_location endpoint trace_host trace_port <<< "$item"
 
   if ! provider_matches "$provider" "$region_location" "$endpoint"; then
     continue
@@ -204,21 +213,21 @@ for item in "${PROVIDERS[@]}"; do
   echo "Timestamp UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a "$TXT_OUT"
   echo | tee -a "$TXT_OUT"
 
-  resolved_ips="$(getent ahostsv4 "$endpoint" | awk '{print $1}' | sort -u | paste -sd ',' - || true)"
+  resolved_ips="$(getent ahostsv4 "$trace_host" | awk '{print $1}' | sort -u | paste -sd ',' - || true)"
 
   echo "Resolved IPv4 addresses: ${resolved_ips:-none}" | tee -a "$TXT_OUT"
   echo | tee -a "$TXT_OUT"
 
-  echo "TCP traceroute to HTTPS port 443:" | tee -a "$TXT_OUT"
+  echo "TCP traceroute to endpoint port $trace_port:" | tee -a "$TXT_OUT"
 
   trace_start="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   safe_provider="$(echo "$provider" | tr ' /.' '___')"
   trace_tmp="/tmp/traceroute_${safe_provider}_${RUN_ID}.txt"
-  trace_command="traceroute -T -p 443 -n -w 3 -q 3 -m 30 $endpoint"
+  trace_command="traceroute -T -p $trace_port -n -w 3 -q 3 -m 30 $trace_host"
 
   echo "$ $trace_command" | tee -a "$TXT_OUT"
 
-  if traceroute -T -p 443 -n -w 3 -q 3 -m 30 "$endpoint" > "$trace_tmp" 2>&1; then
+  if traceroute -T -p "$trace_port" -n -w 3 -q 3 -m 30 "$trace_host" > "$trace_tmp" 2>&1; then
     status="success"
   else
     status="failed"
@@ -257,6 +266,8 @@ for item in "${PROVIDERS[@]}"; do
     --arg provider "$provider" \
     --arg region_location "$region_location" \
     --arg endpoint "$endpoint" \
+    --arg endpoint_host "$trace_host" \
+    --argjson endpoint_port "$trace_port" \
     --arg trace_command "$trace_command" \
     --arg resolved_ips "$resolved_ips" \
     --arg status "$status" \
@@ -265,14 +276,16 @@ for item in "${PROVIDERS[@]}"; do
     --arg trace_output "$trace_output" \
     --arg total_ms "$total_ms" \
     '{
-      schema_version: "traceroute_v1",
-      test_type: "tcp_traceroute_443",
+      schema_version: "traceroute_v2",
+      test_type: "tcp_traceroute",
       source_node: "Cubepath VM Barcelona",
       run_id: $run_id,
       timestamp_utc: $timestamp_utc,
       provider: $provider,
       region_location: $region_location,
       endpoint: $endpoint,
+      endpoint_host: $endpoint_host,
+      endpoint_port: $endpoint_port,
       trace_command: $trace_command,
       resolved_ipv4_addresses: ($resolved_ips | split(",") | map(select(length > 0))),
       status: $status,

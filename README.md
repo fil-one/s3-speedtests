@@ -167,7 +167,7 @@ Provider traceroutes:
 ./scripts/s3_provider_traceroutes.sh
 ```
 
-Traceroutes are generated only for enabled endpoints in `/testfiles/s3_targets.ini`. Use `--targets` to point at a different target config.
+Traceroutes are generated only for enabled endpoints in `/testfiles/s3_targets.ini`. An explicit port in `endpoint_url` is used as the TCP traceroute destination port; otherwise HTTPS endpoints default to 443 (and explicit HTTP URLs default to 80). Use `--targets` to point at a different target config.
 
 Upload standard and large file sets together:
 

@@ -106,6 +106,35 @@ class TestStartTimestampTest(unittest.TestCase):
             self.assertEqual(REPORT.infer_tests_started_at_utc(data_dir), expected)
 
 
+class TracerouteEndpointTest(unittest.TestCase):
+    def test_parses_explicit_endpoint_port_separately_from_hostname(self) -> None:
+        self.assertEqual(
+            REPORT.endpoint_target("https://s3.rustfs.staging.filonecontent.com:8010"),
+            (
+                "s3.rustfs.staging.filonecontent.com:8010",
+                "s3.rustfs.staging.filonecontent.com",
+                8010,
+            ),
+        )
+
+    def test_traceroute_fallback_uses_explicit_port_and_bare_hostname(self) -> None:
+        record = {"endpoint": "s3.rustfs.staging.filonecontent.com:8010"}
+
+        self.assertEqual(
+            REPORT.traceroute_command(record),
+            "traceroute -T -p 8010 -n -w 3 -q 3 -m 30 s3.rustfs.staging.filonecontent.com",
+        )
+
+    def test_filter_accepts_current_and_legacy_traceroute_records(self) -> None:
+        records = [
+            {"test_type": "tcp_traceroute", "endpoint": "new.example:8010"},
+            {"test_type": "tcp_traceroute_443", "endpoint": "old.example"},
+            {"test_type": "something_else", "endpoint": "ignored.example"},
+        ]
+
+        self.assertEqual(REPORT.filter_traceroute_records(records, set()), records[:2])
+
+
 class NetworkTargetTextTest(unittest.TestCase):
     def test_distinguishes_automatic_and_explicit_amsterdam_targets(self) -> None:
         automatic = {
