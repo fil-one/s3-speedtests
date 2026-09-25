@@ -29,7 +29,7 @@ Runs the full benchmark workflow except setup:
   5. Standard upload test
   6. Large upload test
   7. Full download test
-  8. DOCX report generation
+  8. PDF report generation
 
 Environment overrides:
   OUTPUT_DIR=/dataoutput
@@ -165,6 +165,6 @@ run_step "s3_provider_traceroutes" env OUTPUT_DIR="$OUTPUT_DIR" TARGETS_FILE="$T
 run_step "s3_upload_standard" "$SCRIPT_DIR/s3_upload_speedtest.sh" "${UPLOAD_COMMON[@]}" --file-set standard
 run_step "s3_upload_large" "$SCRIPT_DIR/s3_upload_speedtest.sh" "${UPLOAD_COMMON[@]}" --file-set large
 run_step "s3_download_full" "$SCRIPT_DIR/s3_download_speedtest.sh" "${DOWNLOAD_COMMON[@]}" --file-set full
-run_step "build_summary_report" "$SCRIPT_DIR/build_summary_report.py" --data-dir "$OUTPUT_DIR" --output-dir "${OUTPUT_DIR}/reports" --tests-started-at-utc "$RUN_ID"
+run_step "build_summary_report" "$SCRIPT_DIR/build_summary_report.py" --format pdf --data-dir "$OUTPUT_DIR" --output-dir "${OUTPUT_DIR}/reports" --tests-started-at-utc "$RUN_ID"
 
 log "All benchmark steps completed"

@@ -275,7 +275,7 @@ Build a summary report from JSONL output in `/dataoutput`:
 ./scripts/build_summary_report.py
 ```
 
-DOCX is the default format. Generated reports are written under `/dataoutput/reports`.
+PDF is the default format. Generated reports are written under `/dataoutput/reports`.
 
 Choose a report format explicitly:
 

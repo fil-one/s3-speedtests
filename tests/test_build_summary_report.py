@@ -14,6 +14,13 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(REPORT)
 
 
+class ReportArgumentParserTest(unittest.TestCase):
+    def test_pdf_is_the_default_report_format(self) -> None:
+        args = REPORT.build_argument_parser().parse_args([])
+
+        self.assertEqual(args.format, "pdf")
+
+
 def transfer_row(provider: str, total: float | None, failures: int = 0) -> dict:
     return {
         "provider": provider,

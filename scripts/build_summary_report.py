@@ -58,6 +58,7 @@ PROVIDER_BAR_FILLS = {
     "wasabi": "17D24F",
 }
 DEFAULT_BAR_FILL = "DADCE0"
+DEFAULT_REPORT_FORMAT = "pdf"
 
 
 def import_docx() -> None:
@@ -1503,12 +1504,12 @@ def create_pdf(args: argparse.Namespace) -> Path:
     return pdf
 
 
-def main() -> int:
+def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Build a DOCX or PDF report from benchmark JSONL output.")
     parser.add_argument("--data-dir", default="/dataoutput", help="Directory containing JSONL benchmark output")
     parser.add_argument("--output-dir", default="/dataoutput/reports", help="Directory for generated reports")
     parser.add_argument("--targets", default="/testfiles/s3_targets.ini", help="INI file with bucket/provider targets used for provider labels")
-    parser.add_argument("--format", choices=["docx", "pdf", "both"], default="docx", help="Report output format")
+    parser.add_argument("--format", choices=["docx", "pdf", "both"], default=DEFAULT_REPORT_FORMAT, help=f"Report output format (default: {DEFAULT_REPORT_FORMAT})")
     parser.add_argument("--source-provider", "--node-name", dest="source_provider", default="", help="Source node provider/name; prompted when omitted in an interactive terminal")
     parser.add_argument("--source-location", "--node-location", dest="source_location", default="", help="Source node location; prompted when omitted in an interactive terminal")
     parser.add_argument("--node-hostname", default="", help="Source node hostname; auto-detected with hostname when omitted")
@@ -1521,7 +1522,11 @@ def main() -> int:
         help="UTC benchmark-suite start time (ISO 8601 or YYYYMMDDTHHMMSSZ); inferred from run logs or data artifacts when omitted",
     )
     parser.add_argument("--no-prompt", action="store_true", help="Do not prompt for source provider/location; use flags, env vars, or fallback values")
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> int:
+    args = build_argument_parser().parse_args()
     resolve_tests_started_at_utc(args)
     args = resolve_source_context(args)
     outputs = []
