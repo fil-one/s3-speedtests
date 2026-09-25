@@ -21,8 +21,9 @@ import statistics
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 SCHEMA_VERSION = "perf_test_v1"
 TEST_SUITE = "s3_provider_transfer_test"
@@ -31,6 +32,7 @@ DEFAULT_TARGETS = "/testfiles/s3_targets.ini"
 DEFAULT_OUTPUT_DIR = "/dataoutput"
 DEFAULT_DOWNLOADS_DIR = "/downloads"
 DEFAULT_PUBLIC_IP = "194.26.100.186"
+DEFAULT_PARALLEL_WORKERS = 4
 
 
 def utc_now() -> str:
@@ -59,6 +61,24 @@ def fmt_mbps(value: float | None) -> str:
     if value is None:
         return "n/a"
     return f"{value:.2f}"
+
+
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
+
+
+def worker_count(args: argparse.Namespace) -> int:
+    return args.parallel_workers if args.parallel else 1
+
+
+def run_jobs(jobs: list[Any], worker: Callable[[Any], Any], max_workers: int) -> list[Any]:
+    if max_workers == 1:
+        return [worker(job) for job in jobs]
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        return list(executor.map(worker, jobs))
 
 
 def run_transfer_command(cmd: list[str], env: dict[str, str], stream_progress: bool) -> subprocess.CompletedProcess[str]:
@@ -161,6 +181,8 @@ def base_record(args: argparse.Namespace, run_id: str, aws_path: str, aws_versio
         "downloads_dir": str(Path(args.downloads_dir).resolve()),
         "output_dir": str(Path(args.output_dir).resolve()),
         "file_set": args.file_set,
+        "parallel_transfers": args.parallel,
+        "parallel_workers": worker_count(args),
     }
 
 
@@ -226,6 +248,29 @@ def download_one(aws_path: str, target: dict[str, str], key: str, dest: Path, en
     proc = run_transfer_command(cmd, env, stream_progress=not args.no_progress)
     elapsed = time.monotonic() - t0
     return proc, elapsed
+
+
+def download_job(job: dict[str, Any]) -> dict[str, Any]:
+    key = job["key"]
+    size_bytes = job["size_bytes"]
+    dest = job["dest"]
+    target = job["target"]
+    args = job["args"]
+    started = utc_now()
+    print(f"DOWNLOAD provider={job['provider']} file={Path(key).name} size_mib={object_size_mib(size_bytes)}")
+    proc, elapsed = download_one(job["aws_path"], target, key, dest, job["env"], args)
+    actual_size = dest.stat().st_size if dest.exists() else 0
+    success = proc.returncode == 0 and actual_size == size_bytes
+    return {
+        **job,
+        "started": started,
+        "ended": utc_now(),
+        "proc": proc,
+        "elapsed": elapsed,
+        "actual_size": actual_size,
+        "success": success,
+        "throughput": (size_bytes * 8 / elapsed / 1_000_000) if elapsed > 0 and success else None,
+    }
 
 
 def cleanup_downloads(provider_dir: Path) -> dict[str, Any]:
@@ -304,6 +349,8 @@ def main() -> int:
     parser.add_argument("--providers", default="", help="Comma-separated target section names to run, empty means all enabled")
     parser.add_argument("--runs", type=int, default=1, help="Repeat count for each listed object")
     parser.add_argument("--max-files", type=int, default=0, help="Optional cap per provider after file-set filtering")
+    parser.add_argument("--parallel", action="store_true", help=f"Download files in parallel (default: {DEFAULT_PARALLEL_WORKERS} workers)")
+    parser.add_argument("--parallel-workers", type=positive_int, default=DEFAULT_PARALLEL_WORKERS, metavar="N", help="Concurrent file transfers used with --parallel")
     parser.add_argument("--dry-run", action="store_true", help="List planned objects without downloading")
     parser.add_argument("--progress", dest="no_progress", action="store_false", help="Show aws-cli progress output")
     parser.add_argument("--verbose-aws", dest="only_show_errors", action="store_false", help="Do not pass --only-show-errors to aws-cli")
@@ -343,7 +390,7 @@ def main() -> int:
     base = base_record(args, run_id, aws_path, aws_version_text)
 
     print(f"run_id={run_id}")
-    print(f"targets={len(targets)} runs={args.runs} file_set={args.file_set} downloads_dir={downloads_dir}")
+    print(f"targets={len(targets)} runs={args.runs} file_set={args.file_set} downloads_dir={downloads_dir} parallel_workers={worker_count(args)}")
     print(f"log={output_paths['log']}")
     print(f"runs_jsonl={output_paths['runs']}")
     print(f"summary_jsonl={output_paths['summary']}")
@@ -414,26 +461,41 @@ def main() -> int:
                 continue
 
             for repeat in range(1, args.runs + 1):
+                jobs = []
                 for obj in objects:
-                    key = obj["key"]
-                    size_bytes = int(obj["size_bytes"])
-                    dest = provider_dir / key.replace("/", "__")
+                    object_key = obj["key"]
+                    dest = provider_dir / object_key.replace("/", "__")
                     dest.parent.mkdir(parents=True, exist_ok=True)
+                    jobs.append({
+                        "key": object_key,
+                        "size_bytes": int(obj["size_bytes"]),
+                        "dest": dest,
+                        "target": target,
+                        "provider": provider,
+                        "prefix": prefix,
+                        "repeat": repeat,
+                        "env": env,
+                        "args": args,
+                        "aws_path": aws_path,
+                    })
+                for result in run_jobs(jobs, download_job, worker_count(args)):
+                    key = result["key"]
+                    size_bytes = result["size_bytes"]
+                    dest = result["dest"]
                     cmd_display = aws_base(aws_path, target) + ["s3", "cp", f"s3://{target['bucket']}/{key}", str(dest)]
                     if args.no_progress:
                         cmd_display.append("--no-progress")
                     if args.only_show_errors and args.no_progress:
                         cmd_display.append("--only-show-errors")
-                    started = utc_now()
-                    print(f"DOWNLOAD provider={provider} file={Path(key).name} size_mib={object_size_mib(size_bytes)}")
+                    started = result["started"]
                     log.write(f"\n## download started={started} provider={provider} bucket={target['bucket']} key={key}\n")
                     log.write("$ " + " ".join(shlex.quote(part) for part in cmd_display) + "\n")
-                    log.flush()
-                    proc, elapsed = download_one(aws_path, target, key, dest, env, args)
-                    ended = utc_now()
-                    actual_size = dest.stat().st_size if dest.exists() else 0
-                    success = proc.returncode == 0 and actual_size == size_bytes
-                    throughput = (size_bytes * 8 / elapsed / 1_000_000) if elapsed > 0 and success else None
+                    proc = result["proc"]
+                    elapsed = result["elapsed"]
+                    ended = result["ended"]
+                    actual_size = result["actual_size"]
+                    success = result["success"]
+                    throughput = result["throughput"]
                     log.write(proc.stdout)
                     if proc.stderr:
                         log.write(proc.stderr)

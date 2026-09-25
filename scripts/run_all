@@ -13,11 +13,13 @@ NETWORK_SERVER_MODE="${NETWORK_SERVER_MODE:-world}"
 UPLOAD_RUNS="${UPLOAD_RUNS:-1}"
 DOWNLOAD_RUNS="${DOWNLOAD_RUNS:-1}"
 TRANSFER_PROGRESS="${TRANSFER_PROGRESS:-0}"
+PARALLEL_TRANSFERS="${PARALLEL_TRANSFERS:-0}"
+PARALLEL_WORKERS="${PARALLEL_WORKERS:-4}"
 PROVIDERS=""
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/run_all [--providers aws,wasabi,backblaze,f1] [--progress]
+Usage: scripts/run_all [--providers aws,wasabi,backblaze,f1] [--progress] [--parallel] [--parallel-workers N]
 
 Runs the full benchmark workflow except setup:
   1. Write AWS CLI profiles from the target config
@@ -41,6 +43,8 @@ Environment overrides:
   UPLOAD_RUNS=1
   DOWNLOAD_RUNS=1
   TRANSFER_PROGRESS=0
+  PARALLEL_TRANSFERS=0
+  PARALLEL_WORKERS=4
 USAGE
 }
 
@@ -57,6 +61,19 @@ while [[ $# -gt 0 ]]; do
     --progress)
       TRANSFER_PROGRESS=1
       shift
+      ;;
+    --parallel)
+      PARALLEL_TRANSFERS=1
+      shift
+      ;;
+    --parallel-workers)
+      PARALLEL_WORKERS="${2:-}"
+      if [[ ! "$PARALLEL_WORKERS" =~ ^[1-9][0-9]*$ ]]; then
+        echo "ERROR: --parallel-workers requires a positive integer" >&2
+        exit 2
+      fi
+      PARALLEL_TRANSFERS=1
+      shift 2
       ;;
     -h|--help)
       usage
@@ -114,6 +131,8 @@ log "testfiles_dir=${TESTFILES_DIR}"
 log "downloads_dir=${DOWNLOADS_DIR}"
 log "providers=${PROVIDERS:-all enabled}"
 log "transfer_progress=${TRANSFER_PROGRESS}"
+log "parallel_transfers=${PARALLEL_TRANSFERS}"
+log "parallel_workers=${PARALLEL_WORKERS}"
 log "run_log=${RUN_LOG}"
 
 PROFILE_ARGS=(--targets "$TARGETS_FILE")
@@ -123,6 +142,14 @@ DOWNLOAD_COMMON=(--targets "$TARGETS_FILE" --output-dir "$OUTPUT_DIR" --download
 if [[ "$TRANSFER_PROGRESS" =~ ^(1|yes|true|on)$ ]]; then
   UPLOAD_COMMON+=(--progress)
   DOWNLOAD_COMMON+=(--progress)
+fi
+if [[ "$PARALLEL_TRANSFERS" =~ ^(1|yes|true|on)$ ]]; then
+  if [[ ! "$PARALLEL_WORKERS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: PARALLEL_WORKERS must be a positive integer" >&2
+    exit 2
+  fi
+  UPLOAD_COMMON+=(--parallel --parallel-workers "$PARALLEL_WORKERS")
+  DOWNLOAD_COMMON+=(--parallel --parallel-workers "$PARALLEL_WORKERS")
 fi
 if [[ -n "$PROVIDERS" ]]; then
   PROFILE_ARGS+=("$PROVIDERS")

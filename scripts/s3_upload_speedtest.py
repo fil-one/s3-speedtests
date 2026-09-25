@@ -19,8 +19,9 @@ import statistics
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 SCHEMA_VERSION = "perf_test_v1"
 TEST_SUITE = "s3_provider_transfer_test"
@@ -29,6 +30,7 @@ DEFAULT_TARGETS = "/testfiles/s3_targets.ini"
 DEFAULT_TESTFILES_DIR = "/testfiles"
 DEFAULT_OUTPUT_DIR = "/dataoutput"
 DEFAULT_PUBLIC_IP = "194.26.100.186"
+DEFAULT_PARALLEL_WORKERS = 4
 
 
 def utc_now() -> str:
@@ -62,6 +64,24 @@ def fmt_mbps(value: float | None) -> str:
     if value is None:
         return "n/a"
     return f"{value:.2f}"
+
+
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
+
+
+def worker_count(args: argparse.Namespace) -> int:
+    return args.parallel_workers if args.parallel else 1
+
+
+def run_jobs(jobs: list[Any], worker: Callable[[Any], Any], max_workers: int) -> list[Any]:
+    if max_workers == 1:
+        return [worker(job) for job in jobs]
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        return list(executor.map(worker, jobs))
 
 
 def run_transfer_command(cmd: list[str], env: dict[str, str], stream_progress: bool) -> subprocess.CompletedProcess[str]:
@@ -149,6 +169,8 @@ def base_record(args: argparse.Namespace, run_id: str, aws_path: str, aws_versio
         "testfiles_dir": str(Path(args.testfiles_dir).resolve()),
         "output_dir": str(Path(args.output_dir).resolve()),
         "file_set": args.file_set,
+        "parallel_transfers": args.parallel,
+        "parallel_workers": worker_count(args),
     }
 
 
@@ -219,6 +241,32 @@ def build_delete_command(aws_path: str, target: dict[str, str], key: str) -> lis
     return cmd
 
 
+def upload_one(job: dict[str, Any]) -> dict[str, Any]:
+    source = job["source"]
+    target = job["target"]
+    args = job["args"]
+    size_bytes = source.stat().st_size
+    cmd = build_upload_command(job["aws_path"], target, source, job["key"], args)
+    started = utc_now()
+    print(
+        f"UPLOAD provider={job['provider']} bucket={target['bucket']} "
+        f"file={source.name} size_mib={round(size_bytes / 1024 / 1024, 3)}"
+    )
+    t0 = time.monotonic()
+    proc = run_transfer_command(cmd, job["env"], stream_progress=not args.no_progress)
+    elapsed_seconds = time.monotonic() - t0
+    return {
+        **job,
+        "cmd": cmd,
+        "started": started,
+        "ended": utc_now(),
+        "size_bytes": size_bytes,
+        "elapsed_seconds": elapsed_seconds,
+        "throughput_mbps": (size_bytes * 8 / elapsed_seconds / 1_000_000) if elapsed_seconds > 0 else None,
+        "proc": proc,
+    }
+
+
 def summarize(records: list[dict[str, Any]], base: dict[str, Any], output_paths: dict[str, Path]) -> list[dict[str, Any]]:
     groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
     for record in records:
@@ -277,6 +325,8 @@ def main() -> int:
     argp.add_argument("--file-set", choices=["quick", "standard", "large", "full"], default="standard", help="quick=1MiB+100MiB, standard<=1GiB, large>=1GiB, full=all files")
     argp.add_argument("--providers", default="", help="Comma-separated target section names to run, empty means all enabled")
     argp.add_argument("--runs", type=int, default=1, help="Repeat count per selected file")
+    argp.add_argument("--parallel", action="store_true", help=f"Upload files in parallel (default: {DEFAULT_PARALLEL_WORKERS} workers)")
+    argp.add_argument("--parallel-workers", type=positive_int, default=DEFAULT_PARALLEL_WORKERS, metavar="N", help="Concurrent file transfers used with --parallel")
     argp.add_argument("--delete-after-upload", action="store_true", help="Delete each object after upload measurement")
     argp.add_argument("--dry-run", action="store_true", help="Print planned uploads without uploading")
     argp.add_argument("--progress", dest="no_progress", action="store_false", help="Show aws-cli progress output")
@@ -314,7 +364,7 @@ def main() -> int:
     base = base_record(args, run_id, aws_path, aws_version_text)
 
     print(f"run_id={run_id}")
-    print(f"targets={len(targets)} files={len(files)} runs={args.runs} file_set={args.file_set}")
+    print(f"targets={len(targets)} files={len(files)} runs={args.runs} file_set={args.file_set} parallel_workers={worker_count(args)}")
     print(f"log={output_paths['log']}")
     print(f"runs_jsonl={output_paths['runs']}")
     print(f"summary_jsonl={output_paths['summary']}")
@@ -334,22 +384,34 @@ def main() -> int:
             prefix = (target.get("prefix") or f"codex-s3-test/{safe_name(provider)}").strip("/")
             env = build_env(target)
             for repeat in range(1, args.runs + 1):
-                for source in files:
-                    size_bytes = source.stat().st_size
+                jobs = [
+                    {
+                        "source": source,
+                        "target": target,
+                        "provider": provider,
+                        "prefix": prefix,
+                        "key": f"{prefix}/{run_id}/{source.name}",
+                        "repeat": repeat,
+                        "env": env,
+                        "args": args,
+                        "aws_path": aws_path,
+                    }
+                    for source in files
+                ]
+                for result in run_jobs(jobs, upload_one, worker_count(args)):
+                    source = result["source"]
+                    key = result["key"]
+                    cmd = result["cmd"]
+                    started = result["started"]
+                    ended = result["ended"]
+                    size_bytes = result["size_bytes"]
                     size_mib = round(size_bytes / 1024 / 1024, 3)
-                    key = f"{prefix}/{run_id}/{source.name}"
-                    cmd = build_upload_command(aws_path, target, source, key, args)
                     safe_cmd = " ".join(shlex.quote(part) for part in cmd)
-                    started = utc_now()
-                    print(f"UPLOAD provider={provider} bucket={target['bucket']} file={source.name} size_mib={size_mib}")
                     log.write(f"\n## upload started={started} provider={provider} bucket={target['bucket']} key={key}\n")
                     log.write(f"$ {safe_cmd}\n")
-                    log.flush()
-                    t0 = time.monotonic()
-                    proc = run_transfer_command(cmd, env, stream_progress=not args.no_progress)
-                    elapsed_seconds = time.monotonic() - t0
-                    ended = utc_now()
-                    throughput_mbps = (size_bytes * 8 / elapsed_seconds / 1_000_000) if elapsed_seconds > 0 else None
+                    proc = result["proc"]
+                    elapsed_seconds = result["elapsed_seconds"]
+                    throughput_mbps = result["throughput_mbps"]
                     log.write(proc.stdout)
                     if proc.stderr:
                         log.write(proc.stderr)

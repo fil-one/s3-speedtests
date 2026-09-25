@@ -97,6 +97,14 @@ The same behavior can be enabled with `TRANSFER_PROGRESS=1`:
 TRANSFER_PROGRESS=1 ./scripts/run_all --providers aws,wasabi
 ```
 
+Upload and download up to four files concurrently per provider:
+
+```bash
+./scripts/run_all --parallel
+```
+
+Choose a different concurrency limit with `--parallel-workers N`. The same settings are available through `PARALLEL_TRANSFERS=1` and `PARALLEL_WORKERS=N`.
+
 By default, `run_all` uses minimal waits: `PAUSE_SECONDS=5`, `NETWORK_RUNS=1`, `NETWORK_SLEEP_SECONDS=5`, and `NETWORK_SERVER_MODE=world`. Override them when you want more samples:
 
 ```bash
@@ -181,6 +189,13 @@ Show upload progress and per-object elapsed time / throughput in the console:
 ./scripts/s3_upload_speedtest.sh --file-set full --progress
 ```
 
+Upload files concurrently (four workers by default):
+
+```bash
+./scripts/s3_upload_speedtest.sh --file-set full --parallel
+./scripts/s3_upload_speedtest.sh --file-set full --parallel --parallel-workers 8
+```
+
 Run upload file sets separately when you want independent standard and large result files:
 
 ```bash
@@ -199,6 +214,15 @@ Show download progress and per-object elapsed time / throughput in the console:
 ```bash
 ./scripts/s3_download_speedtest.sh --file-set full --progress
 ```
+
+Download files concurrently (four workers by default):
+
+```bash
+./scripts/s3_download_speedtest.sh --file-set full --parallel
+./scripts/s3_download_speedtest.sh --file-set full --parallel --parallel-workers 8
+```
+
+Parallel mode overlaps files within one provider and repeat. Providers and repeat rounds still run in sequence, and cleanup waits for all downloads in the batch to finish. With `--progress`, output from simultaneous AWS CLI processes can be interleaved.
 
 With `--progress`, the AWS CLI progress display streams to the terminal. The scripts still write JSONL metrics and print a final `DONE ... elapsed=... throughput_mbps=...` line for each object. When progress is enabled through `run_all`, the orchestration log also captures the console stream because `run_all` uses `tee`.
 
